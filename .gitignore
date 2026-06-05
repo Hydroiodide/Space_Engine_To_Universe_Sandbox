@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project-specific
+*.sc
+*.ubox
+translation_db.json
+
+# Logs and debug
+*.log
+conversion_log.txt
