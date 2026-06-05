@@ -1,6 +1,10 @@
 # SE→US2 Converter
 
-A graphical tool that converts Space Engine solar system export files (`.sc`) into Universe Sandbox 2 simulation files (`.ubox`), and back again.
+A graphical tool that converts Space Engine solar system export files (`.sc`) into Universe Sandbox 2 simulation files (`.ubox`).
+
+The converter is designed to preserve planetary systems, orbital relationships, rings, moons, asteroids, and other supported objects as accurately as possible between the two programs. However, Space Engine and Universe Sandbox use different physics models, simulation methods, numerical solvers, and stability assumptions. As a result, systems that appear stable in Space Engine may evolve differently in Universe Sandbox over time. Long-term orbital drift, resonance changes, close encounters, ejections, collisions, and other emergent gravitational effects may occur after conversion, especially in densely populated or highly dynamic systems.
+
+One of the goals of this converter is to make it possible to observe how a Space Engine system behaves under Universe Sandbox's physics simulation, including cases where the resulting system becomes chaotic, unstable, or evolves in unexpected ways.
 
 ---
 
@@ -13,8 +17,7 @@ A graphical tool that converts Space Engine solar system export files (`.sc`) in
 - Barycenter flattening with correct mass-ratio orbital scaling
 - Configurable keep-limits for belt asteroids, ring particles, and comets
 - Batch mode for converting an entire export folder at once
-- Optional back-export from `.ubox` to `.sc`
-
+  
 ---
 
 ## Architecture
@@ -118,6 +121,10 @@ pyinstaller --onefile --noconsole --name "SE-US2-Converter" --icon icon.ico --ad
 - Ring particle count is capped at 2000 per planet by default; raise the limit in the GUI if needed.
 - Procedural textures and volumetric clouds from Space Engine have no direct equivalent in Universe Sandbox and are approximated by palette selection.
 - Comet tails, nebulae, and galaxy objects are not converted.
+- This project was developed with extensive assistance from AI tools. While the converter has been tested, some portions of the codebase, generated logic, documentation, comments, and this README may contain mistakes, inaccuracies, incomplete implementations, inefficient solutions, or AI-generated hallucinations.
+- Users should verify conversion results before relying on them for scientific accuracy, simulation accuracy, or large-scale projects.
+- If you encounter unexpected behavior, incorrect object properties, missing data, unusual visual results, or documentation inconsistencies, assume a converter bug is possible and report it with the source .sc file whenever possible.
+Space Engine and Universe Sandbox use different simulation models, rendering systems, and object representations. Some information cannot be converted perfectly and may require manual adjustment after import.
 
 ---
 
