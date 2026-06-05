@@ -115,7 +115,7 @@ pyinstaller --onefile --noconsole --name "SE-US2-Converter" --icon icon.ico --ad
 
 ## Known limitations
 
-- Ring particle count is capped at 500 per planet by default; raise the limit in the GUI if needed.
+- Ring particle count is capped at 2000 per planet by default; raise the limit in the GUI if needed.
 - Procedural textures and volumetric clouds from Space Engine have no direct equivalent in Universe Sandbox and are approximated by palette selection.
 - Comet tails, nebulae, and galaxy objects are not converted.
 
