@@ -73,8 +73,6 @@ python main.py
 
 The script detects `.sc` files automatically and writes a `.ubox` next to each one.
 
-To back-export a `.ubox` to `.sc`, place the `.ubox` in the working directory and run the same command.
-
 ---
 
 ## Building a standalone Windows executable
