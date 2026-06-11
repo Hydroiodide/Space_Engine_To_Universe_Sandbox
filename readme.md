@@ -13,37 +13,49 @@ One of the goals of this converter is to make it possible to observe how a Space
 - Converts stars, planets, moons, dwarf planets, dwarf moons, ring systems, asteroids, and comets
 - Correct axial-tilt inheritance — rings and moons orbit in the planet's equatorial plane
 - Gas giant cloud palettes matched to Space Engine surface presets and Sudarsky class
-- Atmospheric scattering applied as a tint over existing cloud colours, not as a replacement
+- Atmospheric scattering applied as a tint over existing cloud colours
 - Barycenter flattening with correct mass-ratio orbital scaling
 - Configurable keep-limits for belt asteroids, ring particles, and comets
 - Batch mode for converting an entire export folder at once
-  
+- **Surface data generation** — procedural temperature, albedo, vapour pressure, and heat capacity maps written as a Universe Sandbox-compatible surface atlas
+- Surface atlas layout scales automatically with body count (1–256 bodies)
+- All Space Engine `Surface{}` parameters normalised to correct physical ranges before generation
+- Debug PNG export for visual verification of generated maps before packaging
+
 ---
 
 ## Architecture
 
-The project is split into five modules with a strict one-way dependency chain:
+The project is split into six modules with a strict one-way dependency chain:
 
 ```
-constants.py  ←  scanner.py  ←  builder.py  ←  converter.py  ←  main.py
+constants.py  ←  scanner.py  ←  builder.py  ←  converter.py  ←  surface_generator.py  ←  main.py
 ```
 
 | File | Responsibility |
 |---|---|
 | `constants.py` | Physical constants, colour palettes, SE↔US lookup tables, global logging. No dependencies on other project files. |
 | `scanner.py` | `.sc` file parser, orbital element extraction, directory pre-scan, object filtering. |
-| `builder.py` | Universe Sandbox JSON entity assembly — orbits, rotation quaternions, ring particles, atmosphere depots, back-export helpers. |
-| `converter.py` | Body classification, barycenter hierarchy flattening, the main `convert_to_ubox` loop, and the US→SE back-export pipeline. |
+| `builder.py` | Universe Sandbox JSON entity assembly — orbits, rotation quaternions, ring particles, atmosphere depots, `SurfaceGridComponent` wiring. |
+| `converter.py` | Body classification, barycenter hierarchy flattening, the main `convert_to_ubox` loop, manifest generation, and validation. |
+| `surface_generator.py` | Procedural planetary map generation and surface atlas packing. Reads SE `Surface{}` parameters and writes `data.surface`, `material0–3.surface`, and `info` into a ZIP archive. |
 | `main.py` | Tkinter graphical interface, button callbacks, and the application entry point. |
 
-A sixth file, `globals_compat.py`, is a three-line shim that lets `builder.py` read UI flags (e.g. force-green for organic life) without importing `main.py`.
+A seventh file, `globals_compat.py`, is a three-line shim that lets `builder.py` read UI flags (e.g. force-green for organic life) without importing `main.py`.
 
 ---
 
 ## Requirements
 
 - Python 3.10 or later
-- No third-party packages required — only the Python standard library
+- [NumPy](https://numpy.org/) — required for surface map generation
+- [Pillow](https://python-pillow.org/) — required for debug PNG export
+
+Install dependencies:
+
+```
+pip install numpy pillow
+```
 
 ---
 
@@ -63,25 +75,9 @@ python main.py
 
 The log window shows progress in real time. Enable **Debug Logging** for verbose output.
 
-### Command line (headless)
-
-Place one or more `.sc` files in the working directory and run:
-
-```
-python main.py
-```
-
-The script detects `.sc` files automatically and writes a `.ubox` next to each one.
-
 ---
 
 ## Building a standalone Windows executable
-
-See the [Build from source](#build-from-source) section below.
-
----
-
-## Build from source
 
 ### 1. Install PyInstaller
 
@@ -92,16 +88,14 @@ pip install pyinstaller
 ### 2. Compile
 
 ```
-pyinstaller --onefile --noconsole --name "SE-US2-Converter" --add-data "globals_compat.py;." main.py
+pyinstaller --onefile --noconsole --name "SE-US2-Converter" --hidden-import numpy --hidden-import numpy.core --hidden-import PIL --hidden-import PIL.Image --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.filedialog --hidden-import tkinter.messagebox --collect-all numpy main.py
 ```
 
 The compiled executable will be at `dist/SE-US2-Converter.exe`.
 
 ### 3. Optional — include a custom icon
 
-```
-pyinstaller --onefile --noconsole --name "SE-US2-Converter" --icon icon.ico --add-data "globals_compat.py;." main.py
-```
+Add `--icon icon.ico` to the command above.
 
 ---
 
@@ -110,7 +104,34 @@ pyinstaller --onefile --noconsole --name "SE-US2-Converter" --icon icon.ico --ad
 | Extension | Description |
 |---|---|
 | `.sc` | Space Engine solar system script — plain text, parsed by `scanner.py` |
-| `.ubox` | Universe Sandbox 2 simulation — a ZIP archive containing JSON files |
+| `.ubox` | Universe Sandbox 2 simulation — a ZIP archive containing JSON and binary surface data |
+
+### Surface archive format
+
+The surface archive (`simulation-<name>-surface.zip`) contains:
+
+| File | Content |
+|---|---|
+| `info` | `{"size": 512}` — atlas dimensions hint |
+| `data.surface` | Float32 RGBA atlas. ch0 = surface temperature (K), ch1 = diffuse albedo (0–1) |
+| `material0.surface` | ch0 = terrain mask, ch1 = vapour pressure (Pa), ch2 = secondary mask, ch3 = continuous mask |
+| `material1.surface` | ch1 = rock heat capacity (J/m²K) |
+| `material2.surface` | ch1 = water heat capacity (mat1 ÷ 3.728) |
+| `material3.surface` | ch1 = atmosphere heat capacity (mat1 ÷ 83.60) |
+
+Atlas layout scales with body count:
+
+| Bodies | Body resolution | Grid |
+|---|---|---|
+| 1 | 1024 × 512 | 1 × 1 |
+| 2 | 1024 × 256 | 1 × 2 |
+| 4 | 512 × 256 | 2 × 2 |
+| 8 | 512 × 128 | 2 × 4 |
+| 16 | 256 × 128 | 4 × 4 |
+| 32 | 256 × 64 | 4 × 8 |
+| 64 | 128 × 64 | 8 × 8 |
+| 128 | 128 × 32 | 8 × 16 |
+| 256 | 64 × 32 | 16 × 16 |
 
 ---
 
@@ -119,10 +140,9 @@ pyinstaller --onefile --noconsole --name "SE-US2-Converter" --icon icon.ico --ad
 - Ring particle count is capped at 2000 per planet by default; raise the limit in the GUI if needed.
 - Procedural textures and volumetric clouds from Space Engine have no direct equivalent in Universe Sandbox and are approximated by palette selection.
 - Comet tails, nebulae, and galaxy objects are not converted.
-- This project was developed with extensive assistance from AI tools. While the converter has been tested, some portions of the codebase, generated logic, documentation, comments, and this README may contain mistakes, inaccuracies, incomplete implementations, inefficient solutions, or AI-generated hallucinations.
-- Users should verify conversion results before relying on them for scientific accuracy, simulation accuracy, or large-scale projects.
-- If you encounter unexpected behavior, incorrect object properties, missing data, unusual visual results, or documentation inconsistencies, assume a converter bug is possible and report it with the source .sc file whenever possible.
-Space Engine and Universe Sandbox use different simulation models, rendering systems, and object representations. Some information cannot be converted perfectly and may require manual adjustment after import.
+- Surface maps are procedurally generated from Space Engine `Surface{}` parameters, not exported from Space Engine directly. Visual results approximate the source world but will not be pixel-accurate.
+- Gas, ice thickness, liquid depth, and temperature gradient views in Universe Sandbox are driven by its own physics simulation using the surface atlas as initial conditions. Results depend on the simulation state and may differ from Space Engine's rendering.
+- This project was developed with extensive assistance from AI tools. Some portions of the codebase, generated logic, and documentation may contain mistakes, inaccuracies, or incomplete implementations. Verify conversion results before relying on them for scientific or large-scale use. Report bugs with the source `.sc` file whenever possible.
 
 ---
 
