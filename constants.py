@@ -98,6 +98,29 @@ US_ATM_DEPOT_KEYS: list = [
     "Helium", "Hydrogen",
 ]
 
+# ─── UNIVERSE SANDBOX CLOUD STYLE IDs ────────────────────────────────────────
+US_CLOUD_STYLES: dict = {
+    "None":0,"Fluffy":1,"Thick":2,"Storm":3,"Wispy":4,
+    "Turbulent":5,"Sparse":6,"Thin":7,"Streaks":8,
+}
+
+# ─── STELLAR CLASS → US TYPE MAPPING ─────────────────────────────────────────
+US_STAR_TYPE_MAIN_SEQUENCE = 1
+US_STAR_TYPE_NEUTRON        = 4
+
+SE_LUMINOSITY_CLASS_NAMES: dict = {
+    "Ia":"Hypergiant/Supergiant Ia","Iab":"Supergiant Iab","Ib":"Supergiant Ib",
+    "I":"Supergiant","II":"Bright Giant","III":"Giant","IV":"Subgiant",
+    "V":"Main Sequence","VI":"Subdwarf","VII":"White Dwarf",
+}
+SE_NEUTRON_STAR_CLASSES: set = {
+    "NS","NEUTRONSTAR","NEUTRON STAR","PULSAR","MAGNETAR","Q","QUARK STAR",
+}
+SE_WHITE_DWARF_CLASSES: set = {
+    "WD","WHITEDWARF","WHITE DWARF",
+    "DA","DB","DC","DO","DZ","DQ","DAB","DAH",
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SE ATMOSPHERE MODEL → HAZE TYPE
 # ─────────────────────────────────────────────────────────────────────────────

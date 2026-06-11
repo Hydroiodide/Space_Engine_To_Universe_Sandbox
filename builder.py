@@ -273,21 +273,177 @@ def derive_water_color_from_ocean(ocean_data) -> str:
 
 
 def extract_cloud_layers(obj_data: dict) -> dict:
-    raw = obj_data.get("raw_data", {})
+    raw = obj_data.get("raw_data", {}) if "raw_data" in obj_data else obj_data
+    result = analyse_cloud_layers(raw, "rocky")
+    return {"coverage": result["coverage"], "height": 15.0, "velocity": 20.0}
+
+def _norm_velocity(raw_vel: float) -> float:
+    """SE cloud velocity (km/h or unitless) → US m/s, clamped to ±6000."""
+    return max(-6000.0, min(6000.0, raw_vel * 0.2778))  # km/h → m/s
+
+
+def analyse_cloud_layers(obj_data: dict, archetype: str) -> dict:
+    from constants import US_CLOUD_STYLES
+    raw = obj_data if isinstance(obj_data, dict) else {}
     cloud_blocks = raw.get("Clouds")
-    clouds_list  = []
+    clouds_list: list = []
     if isinstance(cloud_blocks, list):
         clouds_list = [c for c in cloud_blocks if isinstance(c, dict)]
     elif isinstance(cloud_blocks, dict):
         clouds_list = [cloud_blocks]
+
+    is_gas = archetype in ("gas_giant", "ice_giant")
+    surf = raw.get("Surface", {})
+    surf = surf if isinstance(surf, dict) else {}
+    stripe_zones = safe_float(surf.get("stripeZones",    0.0)) / 10.0
+    stripe_twist = safe_float(surf.get("stripeTwist",    0.0)) / 20.0
+    cyclone_magn = safe_float(surf.get("cycloneMagn",    0.0)) / 20.0
+    cyclone_freq = safe_float(surf.get("cycloneFreq",    0.0)) / 2.0
+    cyclone_dens = safe_float(surf.get("cycloneDensity", 0.0)) / 1.0
+    cyclone_oct  = safe_float(surf.get("cycloneOctaves", 0.0)) / 10.0
+
     if not clouds_list:
-        return {"coverage": 0.5, "height": 15.0, "velocity": 20.0}
-    primary = max(clouds_list, key=lambda c: safe_float(c.get("Coverage", 0.5)))
-    return {
-        "coverage": safe_float(primary.get("Coverage", 0.5)),
-        "height":   safe_float(primary.get("Height",   15.0)),
-        "velocity": safe_float(primary.get("Velocity", 20.0)),
+        if is_gas:
+            return {"cloud_set_a":US_CLOUD_STYLES["Streaks"],"cloud_set_b":US_CLOUD_STYLES["Turbulent"],
+                    "custom_appearance":True,"coverage":1.0,"opacity":1.0,
+                    "color_rgba":"RGBA(1.000, 1.000, 1.000, 1.000)"}
+        return {"cloud_set_a":US_CLOUD_STYLES["Fluffy"],"cloud_set_b":US_CLOUD_STYLES["Fluffy"],
+                "custom_appearance":False,"coverage":0.5,"opacity":0.8,
+                "color_rgba":"RGBA(1.000, 1.000, 1.000, 1.000)"}
+
+    def _style_for_layer(c: dict) -> str:
+        coverage = safe_float(c.get("Coverage",    0.5))
+        velocity = _norm_velocity(safe_float(c.get("Velocity",   20.0)))
+        octaves  = safe_float(c.get("mainOctaves",  4.0)) / 20.0
+        freq     = safe_float(c.get("mainFreq",     1.0)) / 3.0
+        bump     = safe_float(c.get("BumpHeight",   0.0))
+        mc = c.get("ModulateColor", "")
+        alpha = 1.0
+        if mc:
+            nums = re.findall(r'[\d.]+', str(mc))
+            if len(nums) >= 4: alpha = safe_float(nums[3])
+        if is_gas:
+            strong_bands = stripe_zones >= 0.3 or stripe_twist >= 0.15
+            if strong_bands or velocity >= 2000:              return "Streaks"
+            if octaves >= 0.30 or freq >= 0.50 or bump >= 0.3: return "Turbulent"
+            if cyclone_magn >= 0.075:                         return "Storm"
+            return "Streaks"
+        if coverage >= 0.80:
+            if velocity >= 2000 or bump >= 0.4: return "Storm"
+            return "Thick"
+        if coverage >= 0.40:
+            if octaves >= 0.35 or freq >= 0.67: return "Turbulent"
+            if velocity >= 3000:              return "Storm"
+            return "Fluffy"
+        if coverage >= 0.10:
+            if alpha < 0.5: return "Streaks"
+            return "Wispy"
+        if cyclone_magn >= 0.075 and cyclone_freq >= 0.5: return "Storm"
+        if cyclone_dens >= 0.7:                             return "Storm"
+        return "Thin"
+
+    scored = [_style_for_layer(c) for c in clouds_list]
+    if is_gas and (stripe_zones >= 3 or stripe_twist >= 3) and "Streaks" not in scored:
+        scored[0] = "Streaks"
+
+    from collections import Counter
+    counts = Counter(scored)
+    ranked = [s for s, _ in counts.most_common()]
+    style_a = ranked[0]
+    style_b = ranked[1] if len(ranked) > 1 else ranked[0]
+    custom  = (style_a != style_b)
+
+    layer_coverages = [safe_float(c.get("Coverage", 0.5)) for c in clouds_list]
+    coverage = min(1.0, sum(layer_coverages))
+
+    alphas = []
+    for c in clouds_list:
+        mc = c.get("ModulateColor", "")
+        if mc:
+            nums = re.findall(r'[\d.]+', str(mc))
+            if len(nums) >= 4: alphas.append(safe_float(nums[3]))
+    if alphas:
+        base_opacity = sum(alphas) / len(alphas)
+        opacity = min(1.0, base_opacity * (1.0 + (len(clouds_list) - 1) * 0.12))
+    else:
+        opacity = min(1.0, coverage * 1.1)
+
+    r_sum = g_sum = b_sum = 0.0; n_col = 0
+    for c in clouds_list:
+        mc = c.get("ModulateColor", "")
+        if mc:
+            nums = re.findall(r'[\d.]+', str(mc))
+            if len(nums) >= 3:
+                r_sum += safe_float(nums[0]); g_sum += safe_float(nums[1])
+                b_sum += safe_float(nums[2]); n_col += 1
+    if n_col:
+        cr = min(1.0, r_sum/n_col); cg = min(1.0, g_sum/n_col); cb = min(1.0, b_sum/n_col)
+    else:
+        cr = cg = cb = 1.0
+    color_rgba = f"RGBA({cr:.3f}, {cg:.3f}, {cb:.3f}, 1.000)"
+
+    result = {
+        "cloud_set_a":       US_CLOUD_STYLES.get(style_a, 1),
+        "cloud_set_b":       US_CLOUD_STYLES.get(style_b, 1),
+        "custom_appearance": custom,
+        "coverage":          round(coverage, 4),
+        "opacity":           round(max(0.0, min(1.0, opacity)), 4),
+        "color_rgba":        color_rgba,
     }
+    log_debug(
+        f"clouds archetype={archetype} layers={len(clouds_list)} "
+        f"styleA={style_a}({result['cloud_set_a']}) styleB={style_b}({result['cloud_set_b']}) "
+        f"cov={result['coverage']:.3f} op={result['opacity']:.3f} "
+        f"cyclone={cyclone_magn:.2f} stripes={stripe_zones:.1f}", "CLOUD")
+    return result
+
+
+def classify_stellar_object(raw_class: str, teff: float, lum_watts: float,
+                             radius_m: float, mass_kg: float) -> dict:
+    from constants import (SE_NEUTRON_STAR_CLASSES, SE_WHITE_DWARF_CLASSES,
+                           US_STAR_TYPE_MAIN_SEQUENCE, US_STAR_TYPE_NEUTRON)
+    cs = str(raw_class or "").strip().upper()
+    cs_nospace = cs.replace(" ", "")
+    if cs == "X" or "BLACKHOLE" in cs_nospace or cs == "BH":
+        return {"us_category":"blackhole","star_type":US_STAR_TYPE_MAIN_SEQUENCE,
+                "lum_class":"REM","description":"Black hole","fallback":False,"fallback_reason":""}
+    if cs in SE_NEUTRON_STAR_CLASSES or cs_nospace in SE_NEUTRON_STAR_CLASSES:
+        return {"us_category":"star","star_type":US_STAR_TYPE_NEUTRON,
+                "lum_class":"NS","description":"Neutron star","fallback":False,"fallback_reason":""}
+    if cs in SE_WHITE_DWARF_CLASSES or cs_nospace in SE_WHITE_DWARF_CLASSES:
+        return {"us_category":"star","star_type":US_STAR_TYPE_MAIN_SEQUENCE,
+                "lum_class":"VII","description":"White dwarf","fallback":False,"fallback_reason":""}
+    lum_class = "V"
+    for pattern, lc in [(r'\bIAB\b',"Iab"),(r'\bIA\b',"Ia"),(r'\bIB\b',"Ib"),
+                        (r'\bIII\b',"III"),(r'\bII\b',"II"),(r'\bIV\b',"IV"),
+                        (r'\bVI\b',"VI"),(r'\bVII\b',"VII"),(r'\bI\b',"I")]:
+        if re.search(pattern, cs): lum_class = lc; break
+    if lum_class in ("Ia","Ib","Iab","I"):
+        return {"us_category":"star","star_type":US_STAR_TYPE_MAIN_SEQUENCE,"lum_class":lum_class,
+                "description":f"Supergiant ({lum_class})","fallback":False,"fallback_reason":""}
+    if lum_class == "II":
+        return {"us_category":"star","star_type":US_STAR_TYPE_MAIN_SEQUENCE,"lum_class":"II",
+                "description":"Bright giant","fallback":False,"fallback_reason":""}
+    if lum_class == "III":
+        return {"us_category":"star","star_type":US_STAR_TYPE_MAIN_SEQUENCE,"lum_class":"III",
+                "description":"Giant","fallback":False,"fallback_reason":""}
+    if re.search(r'\b[LTY]\d', cs) or teff < 2500:
+        return {"us_category":"star","star_type":US_STAR_TYPE_MAIN_SEQUENCE,"lum_class":"M",
+                "description":"Red dwarf","fallback":False,"fallback_reason":""}
+    return {"us_category":"star","star_type":US_STAR_TYPE_MAIN_SEQUENCE,"lum_class":"V",
+            "description":"Main sequence","fallback":False,"fallback_reason":""}
+
+
+def get_star_color_from_se(obj_data: dict, teff: float) -> str | None:
+    color_raw = obj_data.get("Color", "") if isinstance(obj_data, dict) else ""
+    if not color_raw: return None
+    nums = re.findall(r'[\d.]+', str(color_raw))
+    if len(nums) >= 3:
+        r, g, b = (min(1.0, safe_float(n)) for n in nums[:3])
+        a = min(1.0, safe_float(nums[3])) if len(nums) >= 4 else 1.0
+        if r > 0 or g > 0 or b > 0:
+            return f"RGBA({r:.3f}, {g:.3f}, {b:.3f}, {a:.3f})"
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -656,6 +812,19 @@ def particles_to_se_rings(particles, planet_pos_us):
 # MAIN ENTITY BUILDER
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _build_surface_grid_component(atlas_index: int,
+                                  radius_m: float,
+                                  bump_height: float = 10.0) -> dict:
+    if atlas_index < 0 or atlas_index >= 256:
+        raise ValueError(f"AtlasIndex {atlas_index} out of range [0, 255]")
+    elevation_ratio = min(bump_height / max(radius_m, 1.0), 0.05)
+    return {
+        "$type": "SurfaceGridComponent",
+        "AtlasIndex": atlas_index,
+        "ElevationToRadiusRatio": round(elevation_ratio, 6),
+    }
+
+
 def build_ubox_entity(obj_id, obj_name, category,
                       archetype, mass_kg, radius_m,
                       us_pos, us_vel, parent_id,
@@ -663,6 +832,7 @@ def build_ubox_entity(obj_id, obj_name, category,
                       relative_to_id=-1,
                       teff=5800.0, lum_watts=3.828e26,
                       rot_period_h=0.0, obliquity_deg=0.0, eq_asc_node_deg=0.0,
+                      barycenter_obliquity=0.0, barycenter_eq_asc_node=0.0,
                       atm_info=None, has_ocean=False, use_water=False,
                       mag_field=0.0, mag_pole_angle=0.0,
                       sea_level=0.0, surface_preset="",
@@ -671,6 +841,9 @@ def build_ubox_entity(obj_id, obj_name, category,
                       has_organic_life=False,
                       diffmap="", se_class="",
                       dist_au=5.0, star_teff=5800.0,
+                      use_clouds=True,
+                      inherit_star_axial_tilt=False,
+                      atlas_index=None,
                       obj_data=None) -> tuple:
 
     if obj_data is None:
@@ -679,7 +852,16 @@ def build_ubox_entity(obj_id, obj_name, category,
     age      = _get_system_age() or 0.0
     pos_str  = f"{us_pos[0]:f};{us_pos[1]:f};{us_pos[2]:f}"
     vel_str  = f"{us_vel[0]:f};{us_vel[1]:f};{us_vel[2]:f}"
-    rot_axis_str, ang_vel_str, quat_str = compute_rotation_us(rot_period_h, obliquity_deg, eq_asc_node_deg)
+    
+    # ── ROTATION US TILT INHERITANCE ──────────────────────────────────────
+    _eff_obliquity = obliquity_deg
+    _eff_eq_asc    = eq_asc_node_deg
+    if is_star and inherit_star_axial_tilt:
+        if abs(barycenter_obliquity) > 1e-6 or abs(barycenter_eq_asc_node) > 1e-6:
+            _eff_obliquity = barycenter_obliquity
+            _eff_eq_asc    = barycenter_eq_asc_node
+    rot_axis_str, ang_vel_str, quat_str = compute_rotation_us(
+        rot_period_h, _eff_obliquity, _eff_eq_asc)
     rot_axis = parse_vec3(rot_axis_str)
 
     is_gas  = archetype in ("gas_giant", "ice_giant")
@@ -694,9 +876,18 @@ def build_ubox_entity(obj_id, obj_name, category,
 
     ocean_block = obj_data.get("Ocean", {})
     water_color = derive_water_color_from_ocean(ocean_block) if isinstance(ocean_block, dict) else _WATER
-    cloud_params = extract_cloud_layers({"raw_data": obj_data})
+    
+    # ── CLOUD ANALYSIS ────────────────────────────────────────────────────────
+    cloud_result  = analyse_cloud_layers(obj_data if obj_data else {}, archetype)
+    _cloud_set_a  = cloud_result["cloud_set_a"]
+    _cloud_set_b  = cloud_result["cloud_set_b"]
+    _custom_cloud = cloud_result["custom_appearance"]
+    cloud_cov     = cloud_result["coverage"] if use_clouds else 0.0
+    _cloud_opacity= cloud_result["opacity"]  if use_clouds else 0.0
+    _cloud_color  = cloud_result["color_rgba"]
 
     palette_key, water_hint = _palette_from_preset(surface_preset)
+
     if palette_key is None:
         palette_key = _ARCHETYPE_DEFAULT_PALETTE.get(archetype, "barren")
     if water_hint:
@@ -822,7 +1013,6 @@ def build_ubox_entity(obj_id, obj_name, category,
     # Clouds: on when there is enough atmosphere
     _atm_pressure = atm_info.get("pressure", 0) if atm_info else 0
     use_clouds    = has_atm or _atm_pressure > 0.01
-    cloud_cov     = cloud_params.get("coverage", 0.5) if use_clouds else 0.0
 
     # Vegetation colour by life type
     if has_exotic_life:        veg_color = "RGBA(0.600, 0.050, 0.800, 1.000)"
@@ -892,14 +1082,14 @@ def build_ubox_entity(obj_id, obj_name, category,
 
         # Clouds
         "CloudColorMode":    0,
-        "CloudColor":        "RGBA(1.000, 1.000, 1.000, 1.000)",
-        "originalCloudColor": "RGBA(1.000, 1.000, 1.000, 1.000)",
-        "customCloudColor":  "RGBA(1.000, 1.000, 1.000, 1.000)",
-        "CustomCloudAppearance": False,
-        "CloudSetA":         1,
-        "CloudSetB":         4,
+        "CloudColor":        _cloud_color,
+        "originalCloudColor": _cloud_color,
+        "customCloudColor":  _cloud_color,
+        "CustomCloudAppearance": _custom_cloud,
+        "CloudSetA":         _cloud_set_a,
+        "CloudSetB":         _cloud_set_b,
         "CloudCoverage":     cloud_cov,
-        "CloudOpacity":      1.0 if use_clouds else 0.0,
+        "CloudOpacity":      _cloud_opacity,
         "CloudOpacitySimulationMode": 0,
         "CloudSpeedSimulationMode":   0,
         "cloudSpeedAtEquatorA": -10.0,
@@ -956,11 +1146,19 @@ def build_ubox_entity(obj_id, obj_name, category,
         "depots": depots,
     })
 
-    if not is_star and not is_gas:
-        atlas = {"rocky":0,"lava":1,"ocean":2,"ice":3,"gas_giant":4,"ice_giant":4}.get(archetype, 0)
-        bump  = max(0.0005, min(0.005, 20_000.0 / max(radius_m, 1.0)))
-        components.append({"$type":"SurfaceGridComponent",
-                            "ElevationToRadiusRatio": float(bump), "AtlasIndex": int(atlas)})
+    if atlas_index is not None:
+        surf_params = obj_data.get("Surface", {}) if isinstance(obj_data, dict) else {}
+        if not isinstance(surf_params, dict):
+            surf_params = {}
+        bump_h = safe_float(surf_params.get("BumpHeight", 10.0), 10.0)
+        components.append(_build_surface_grid_component(
+            int(atlas_index), radius_m, bump_h))
+    else:
+        components.append({
+            "$type": "SurfaceGridComponent",
+            "AtlasIndex": -1,
+            "ElevationToRadiusRatio": 0.0,
+        })
 
     if est_temp is None:
         est_temp = teff if is_star else _ARCHETYPE_DEFAULT_TEMPS.get(archetype, 280.0)

@@ -9,7 +9,10 @@ from constants import (
     GRAVITATIONAL_CONSTANT, EARTH_MASS_KG, EARTH_RADIUS_M,
     AU_TO_METERS, AU_TO_KM, GYR_TO_SECONDS,
     VALID_SE_TYPES, _ARCHETYPE_DEFAULT_TEMPS,
+    SOLAR_RADIUS_M, US_STAR_TYPE_MAIN_SEQUENCE, US_STAR_TYPE_NEUTRON,
 )
+from surface_generator import body_atlas_tiles, should_generate_surface, write_surface_archive
+
 from scanner import (
     parse_se_file, extract_physical_properties, extract_se_extras,
     apply_limit_filter,
@@ -23,6 +26,7 @@ from builder import (
     calculate_banding_offsets_proper, compute_rotation_us,
     get_ui_color, _generate_gas_giant_palette_from_preset,
     _calc_atmosphere_mass,
+    classify_stellar_object, get_star_color_from_se, analyse_cloud_layers,
 )
 from constants import detect_brown_dwarf_type
 
@@ -235,6 +239,54 @@ def flatten_barycenters(parsed_objects):
             parsed_objects[primary_decl]["orbit"] = dict(bary_orbit)
         parsed_objects[primary_decl]["parent_decl"] = bary_obj.get("parent_decl")
 
+        # Determine the canonical period for this barycentric system.
+        # Prefer an explicit Period* key from the barycenter orbit; fall back to
+        # computing one from total system mass + primary's SMA.
+        _canonical_period_days = None
+
+        # Try explicit keys from the barycenter orbit first
+        if bary_orbit:
+            if "PeriodDays" in bary_orbit:
+                _canonical_period_days = safe_float(bary_orbit["PeriodDays"])
+            elif "PeriodYears" in bary_orbit:
+                _canonical_period_days = safe_float(bary_orbit["PeriodYears"]) * 365.25
+            elif "Period" in bary_orbit:
+                _canonical_period_days = safe_float(bary_orbit["Period"]) * 365.25
+
+        # Try explicit keys from any child's orbit block (they should all agree)
+        if _canonical_period_days is None:
+            for child_decl in children:
+                child_orb = parsed_objects[child_decl].get("orbit", {})
+                if "PeriodDays" in child_orb:
+                    _canonical_period_days = safe_float(child_orb["PeriodDays"]); break
+                elif "PeriodYears" in child_orb:
+                    _canonical_period_days = safe_float(child_orb["PeriodYears"]) * 365.25; break
+                elif "Period" in child_orb:
+                    _canonical_period_days = safe_float(child_orb["Period"]) * 365.25; break
+
+        # Last resort: Kepler from total system mass + primary SMA
+        if _canonical_period_days is None:
+            _total_mass = sum(parsed_objects[c]["mass_kg"] for c in children)
+            _prim_orb   = parsed_objects[primary_decl].get("orbit", {})
+            _sma_m      = 0.0
+            if "SemiMajorAxisKm" in _prim_orb:
+                _sma_m = safe_float(_prim_orb["SemiMajorAxisKm"]) * 1_000.0
+            elif "SemiMajorAxis" in _prim_orb:
+                _sma_m = safe_float(_prim_orb["SemiMajorAxis"]) * AU_TO_METERS
+            if _sma_m > 0 and _total_mass > 0:
+                _period_s = 2 * math.pi * math.sqrt(_sma_m**3 / (GRAVITATIONAL_CONSTANT * _total_mass))
+                _canonical_period_days = _period_s / 86_400.0
+
+        # Stamp the canonical period onto every child's orbit block so
+        # tidal-lock derivation in Pass 1 always sees a consistent value.
+        if _canonical_period_days and _canonical_period_days > 0:
+            for child_decl in children:
+                parsed_objects[child_decl]["orbit"]["PeriodDays"] = str(_canonical_period_days)
+                parsed_objects[child_decl]["_canonical_period_days"] = _canonical_period_days
+            log_debug(
+                f"Bary '{bary_obj['name']}': canonical period = {_canonical_period_days:.6f} days "
+                f"applied to {len(children)} children", "BARY")
+
         # Use Period + Kepler to determine AU vs km for a bare SemiMajorAxis value.
         # This handles deep-field systems where SMA>100 is still in AU.
         def _sma_to_km(orb, parent_mass_kg):
@@ -403,6 +455,136 @@ def _infer_composition_keywords(obj_id, archetype, atm_info, has_life,
 
 # ─── Main SE → US conversion ──────────────────────────────────────────────────
 
+def _new_id() -> str:
+    return base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip("=")
+
+
+def build_manifest(sim_name: str,
+                   sim_id: str,
+                   info_id: str,
+                   ui_state_id: str,
+                   sim_path: str,
+                   info_path: str,
+                   ui_state_path: str,
+                   now: str,
+                   surface_zip_path: str | None = None,
+                   thumbnail_id: str | None = None,
+                   preview_id: str | None = None) -> tuple[dict, str | None]:
+    surface_zip_id = None
+    entries = []
+
+    if surface_zip_path is not None:
+        surface_zip_id = _new_id()
+        entries.append({
+            "AssetType": "Ubox",
+            "BaseType": "SurfaceData",
+            "TypeName": "surface.zip",
+            "BuildRevision": 46923,
+            "LastModifiedUTC": now,
+            "Path": os.path.basename(surface_zip_path),
+            "ID": surface_zip_id,
+            "Dependencies": [],
+        })
+
+    sim_deps = []
+    if thumbnail_id:
+        sim_deps.append({"$v": thumbnail_id})
+    if preview_id:
+        sim_deps.append({"$v": preview_id})
+    if surface_zip_id:
+        sim_deps.append({"$v": surface_zip_id})
+    sim_deps.append({"$v": ui_state_id})
+    sim_deps.append({"$v": info_id})
+
+    sim_entry = {
+        "Name": sim_name,
+        "AssetType": "JSON",
+        "BaseType": "Simulation",
+        "TypeName": "simulation.json",
+        "BuildRevision": 46923,
+        "LastModifiedUTC": now,
+        "Path": sim_path,
+        "ID": sim_id,
+        "Dependencies": sim_deps,
+    }
+    info_entry = {
+        "Name": f"simulation-{sim_name}-info",
+        "AssetType": "JSON",
+        "BaseType": "WorkshopItem",
+        "TypeName": "info.json",
+        "BuildRevision": 46923,
+        "LastModifiedUTC": now,
+        "Path": info_path,
+        "ID": info_id,
+        "Dependencies": [],
+    }
+    ui_entry = {
+        "AssetType": "JSON",
+        "BaseType": "UIState",
+        "TypeName": "ui-state.json",
+        "BuildRevision": 46923,
+        "LastModifiedUTC": now,
+        "Path": ui_state_path,
+        "ID": ui_state_id,
+        "Dependencies": [],
+    }
+
+    return {
+        "Header": {
+            "BuildRevision": 46923,
+            "BuildName": "Universe Sandbox",
+            "LastModifiedUTC": now,
+            "EntryPoints": [sim_id],
+            "EntryPoint": sim_id,
+        },
+        "Entries": [sim_entry] + entries + [ui_entry, info_entry],
+    }, surface_zip_id
+
+
+def validate_manifest(manifest: dict,
+                      surface_zip_path: str | None,
+                      sim_name: str,
+                      surface_zip_payload: bytes | None = None) -> None:
+    entries = manifest.get("Entries", [])
+    sim_entry = next((e for e in entries if e.get("BaseType") == "Simulation"), None)
+
+    if sim_entry is None:
+        raise ValueError("manifest: missing Simulation entry")
+
+    if surface_zip_path is None:
+        return
+
+    zip_filename = os.path.basename(surface_zip_path)
+    surf_entries = [e for e in entries if e.get("BaseType") == "SurfaceData"]
+    if not surf_entries:
+        raise ValueError("manifest: SurfaceData entry missing but surface zip was generated")
+
+    se = surf_entries[0]
+    if se.get("AssetType") != "Ubox":
+        raise ValueError(f"manifest: SurfaceData AssetType is '{se.get('AssetType')}', expected 'Ubox'")
+    if se.get("TypeName") != "surface.zip":
+        raise ValueError(f"manifest: SurfaceData TypeName is '{se.get('TypeName')}', expected 'surface.zip'")
+    if se.get("Path") != zip_filename:
+        raise ValueError(
+            f"manifest: SurfaceData Path '{se.get('Path')}' "
+            f"does not match zip filename '{zip_filename}'"
+        )
+
+    surf_id = se["ID"]
+    sim_deps = [d.get("$v", d) for d in sim_entry.get("Dependencies", [])]
+    if surf_id not in sim_deps:
+        raise ValueError(
+            f"manifest: Simulation entry does not depend on SurfaceData id '{surf_id}'"
+        )
+
+    if surface_zip_payload is None and not os.path.isfile(surface_zip_path):
+        raise ValueError(f"manifest: surface zip path does not exist on disk: '{surface_zip_path}'")
+    if surface_zip_payload is not None and len(surface_zip_payload) == 0:
+        raise ValueError("manifest: surface zip payload is empty")
+
+    log_debug("Manifest validation passed (SurfaceData present and linked)", "MANIFEST")
+
+
 def convert_to_ubox(se_data, output_file="SE_Import.ubox",
                     belt_asteroid_input="100%",
                     planetary_ring_input="100%",
@@ -420,9 +602,9 @@ def convert_to_ubox(se_data, output_file="SE_Import.ubox",
     _const.SYSTEM_AGE_SECONDS = None
 
     sim_name = os.path.splitext(os.path.basename(output_file))[0]
-    sim_id   = base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip("=")
-    info_id  = base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip("=")
-    ui_id    = base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip("=")
+    sim_id   = _new_id()
+    info_id  = _new_id()
+    ui_id    = _new_id()
     sfn = f"simulation-{sim_name}.json"
     ifn = f"simulation-{sim_name}-info.json"
     ufn = f"simulation-{sim_name}-ui-state.json"
@@ -512,6 +694,29 @@ def convert_to_ubox(se_data, output_file="SE_Import.ubox",
     _status("Resolving barycenter hierarchy")
     flatten_barycenters(parsed_objects)
 
+    # Pass 1.3: validate barycentric period consistency
+    for decl, obj in parsed_objects.items():
+        if not obj["is_barycenter"]: continue
+        sibling_periods = []
+        sibling_names   = []
+        for cdecl, cobj in parsed_objects.items():
+            if cobj.get("parent_decl") != decl: continue
+            orb = cobj.get("orbit", {})
+            p = None
+            if "PeriodDays"  in orb: p = safe_float(orb["PeriodDays"])
+            elif "PeriodYears" in orb: p = safe_float(orb["PeriodYears"]) * 365.25
+            elif "Period"      in orb: p = safe_float(orb["Period"]) * 365.25
+            if p and p > 0:
+                sibling_periods.append(p)
+                sibling_names.append(cobj["name"])
+        if len(sibling_periods) >= 2:
+            p_min, p_max = min(sibling_periods), max(sibling_periods)
+            if p_max / max(p_min, 1e-12) > 1.001:   # > 0.1% mismatch
+                log_debug(
+                    f"WARNING period mismatch under barycenter '{obj['name']}': "
+                    + ", ".join(f"{n}={p:.6f}d" for n, p in zip(sibling_names, sibling_periods)),
+                    "BARY_WARN")
+
     # Bucket and filter belt asteroids + comets
     belt_asteroids = []; comets = []
     for decl, obj in parsed_objects.items():
@@ -529,6 +734,18 @@ def convert_to_ubox(se_data, output_file="SE_Import.ubox",
 
     # Memoised absolute state (ECI, meters)
     _cache = {}
+    
+    def _apply_tilt(rp: list, rv: list, obl_deg: float, ean_deg: float) -> tuple:
+        """Rotate position+velocity vectors by Rz(EAN)*Rx(obl)."""
+        obl_r = math.radians(obl_deg); ean_r = math.radians(ean_deg)
+        c_o = math.cos(obl_r); s_o = math.sin(obl_r)
+        c_e = math.cos(ean_r); s_e = math.sin(ean_r)
+        def _rot(v):
+            x1=v[0]; y1=v[1]*c_o-v[2]*s_o; z1=v[1]*s_o+v[2]*c_o
+            x2=x1*c_e-y1*s_e; y2=x1*s_e+y1*c_e
+            return [x2,y2,z1]
+        return _rot(rp), _rot(rv)
+    
     def get_abs_state(decl, _seen=None, _depth=0):
         if decl in _cache: return _cache[decl]
         if _depth > 64: return [0.0]*3, [0.0]*3
@@ -608,28 +825,88 @@ def convert_to_ubox(se_data, output_file="SE_Import.ubox",
                 rp = [0.0 if not math.isfinite(x) else x for x in rp]
                 rv = [0.0 if not math.isfinite(x) else x for x in rv]
 
-                # Apply parent planet axial tilt to moon orbits (Rz(EAN)*Rx(obl))
+                # ──── UNIFIED TILT SYSTEM ────────────────────────────────────
+                import globals_compat as _gc
+                _inherit_moon_tilt     = getattr(_gc, "INHERIT_MOON_AXIAL_TILT",      True)
+                _inherit_star_tilt     = getattr(_gc, "INHERIT_STAR_AXIAL_TILT",      False)
+                _align_to_star_equator = getattr(_gc, "ALIGN_ORBITS_TO_STAR_EQUATOR", False)
+
                 par_s = parsed_objects.get(pdecl)
-                if par_s and not par_s.get("is_star") and not par_s.get("is_barycenter"):
-                    p_obl = safe_float(par_s.get("obliquity_deg",0.0))
-                    p_ean = safe_float(par_s.get("eq_asc_deg",   0.0))
+
+                # Moon inherits parent PLANET tilt
+                if (_inherit_moon_tilt and par_s
+                        and not par_s.get("is_star") and not par_s.get("is_barycenter")):
+                    p_obl = safe_float(par_s.get("obliquity_deg", 0.0))
+                    p_ean = safe_float(par_s.get("eq_asc_deg",    0.0))
                     if abs(p_obl) > 1e-6 or abs(p_ean) > 1e-6:
-                        obl_r = math.radians(p_obl); ean_r = math.radians(p_ean)
-                        c_o = math.cos(obl_r); s_o = math.sin(obl_r)
-                        c_e = math.cos(ean_r); s_e = math.sin(ean_r)
-                        def _tilt(v):
-                            x1=v[0]; y1=v[1]*c_o-v[2]*s_o; z1=v[1]*s_o+v[2]*c_o
-                            x2=x1*c_e-y1*s_e; y2=x1*s_e+y1*c_e; z2=z1
-                            return [x2,y2,z2]
-                        rp = _tilt(rp); rv = _tilt(rv)
+                        rp, rv = _apply_tilt(rp, rv, p_obl, p_ean)
+
+                # Star inherits parent BARYCENTER tilt
+                if (_inherit_star_tilt and par_s and par_s.get("is_barycenter")):
+                    p_obl = safe_float(par_s.get("obliquity_deg", 0.0))
+                    p_ean = safe_float(par_s.get("eq_asc_deg",    0.0))
+                    if abs(p_obl) > 1e-6 or abs(p_ean) > 1e-6:
+                        rp, rv = _apply_tilt(rp, rv, p_obl, p_ean)
+
+                # Non-star aligns to parent STAR equatorial plane
+                if (_align_to_star_equator and par_s and par_s.get("is_star")
+                        and not obj.get("is_star")):
+                    star_obl = safe_float(par_s.get("obliquity_deg", 0.0))
+                    star_ean = safe_float(par_s.get("eq_asc_deg",    0.0))
+                    if _inherit_star_tilt:
+                        grandpar = parsed_objects.get(par_s.get("parent_decl", ""))
+                        if grandpar and grandpar.get("is_barycenter"):
+                            star_obl = safe_float(grandpar.get("obliquity_deg", star_obl))
+                            star_ean = safe_float(grandpar.get("eq_asc_deg",    star_ean))
+                    if abs(star_obl) > 1e-6 or abs(star_ean) > 1e-6:
+                        rp, rv = _apply_tilt(rp, rv, star_obl, star_ean)
+                        log_debug(f"Equator-align '{obj['name']}' → star '{par_s['name']}' "
+                                  f"obl={star_obl:.3f} ean={star_ean:.3f}", "EQUATOR")
 
                 result = ([pp[i]+rp[i] for i in range(3)], [pv[i]+rv[i] for i in range(3)])
         _cache[decl] = result
         return result
 
     # Pass 2: emit entities
+    _stellar_validation_log: list = []
+    _cloud_validation_log:   list = []
     _status("Building Universe Sandbox entities")
     next_id = max((o["id"] for o in parsed_objects.values()), default=0) + 1
+
+    def _will_emit_entity(obj: dict) -> bool:
+        if obj.get("is_barycenter"):
+            return False
+        obj_type = obj.get("decl_type","").strip().lower()
+        if obj_type == "asteroid": return False
+        if obj_type == "moon"        and not export_moons:         return False
+        if obj_type == "dwarfmoon"   and not export_dwarf_moons:   return False
+        if obj_type == "dwarfplanet" and not export_dwarf_planets:  return False
+        if obj_type == "comet"       and not export_comets:         return False
+        return True
+
+    surface_zip_path = None
+    surface_zip_payload = None
+    surface_atlas_indices = {}
+    import globals_compat as _gc
+    if getattr(_gc, "GENERATE_SURFACE_DATA", True):
+        surface_bodies = [
+            obj for obj in parsed_objects.values()
+            if _will_emit_entity(obj) and should_generate_surface(obj)
+        ]
+        if surface_bodies:
+            import io
+            surface_zip_path = f"simulation-{sim_name}-surface.zip"
+            surface_zip_bytes = io.BytesIO()
+            _status("Generating surface data")
+            write_surface_archive(surface_bodies, surface_zip_bytes, sim_name)
+            surface_zip_payload = surface_zip_bytes.getvalue()
+            n_surface_for_atlas = min(len(surface_bodies), 256)
+            for idx, solid_obj in enumerate(surface_bodies[:256]):
+                surface_atlas_indices[id(solid_obj)] = body_atlas_tiles(idx, n_surface_for_atlas)[0]
+            for solid_obj in surface_bodies[256:]:
+                log_debug(
+                    f"WARNING: '{solid_obj['name']}' exceeds atlas capacity, no surface",
+                    "SURFACE_WARN")
 
     # Barycenters are consumed by flatten_barycenters — never emitted as entities.
     # US simulates the wobble physically from positions/velocities alone.
@@ -639,13 +916,9 @@ def convert_to_ubox(se_data, output_file="SE_Import.ubox",
         continue
 
     for decl, obj in list(parsed_objects.items()):
-        if obj["is_barycenter"]: continue
+        if not _will_emit_entity(obj): continue
         obj_type = obj.get("decl_type","").strip().lower()
-        if obj_type == "asteroid": continue
-        if obj_type == "moon"        and not export_moons:         continue
-        if obj_type == "dwarfmoon"   and not export_dwarf_moons:   continue
-        if obj_type == "dwarfplanet" and not export_dwarf_planets:  continue
-        if obj_type == "comet"       and not export_comets:         continue
+        atlas_idx = surface_atlas_indices.get(id(obj))
 
         abs_pos_eci, abs_vel_eci = get_abs_state(decl)
         us_pos = eci_to_us(abs_pos_eci); us_vel = eci_to_us(abs_vel_eci)
@@ -726,6 +999,7 @@ def convert_to_ubox(se_data, output_file="SE_Import.ubox",
             se_class=obj["raw_data"].get("Class",""),
             dist_au=dist_au_gg,
             star_teff=star_teff_gg,
+            atlas_index=atlas_idx,
             obj_data=obj.get("raw_data",{}),
         )
 
@@ -738,7 +1012,7 @@ def convert_to_ubox(se_data, output_file="SE_Import.ubox",
             if obj_type == "blackhole":
                 entity["Category"] = "Black Hole"
                 entity["Components"] = [c for c in entity.get("Components",[])
-                                         if c["$type"] not in ("SurfaceGridComponent","CompositionComponent")]
+                                         if c["$type"] != "CompositionComponent"]
                 if not any(c["$type"]=="BlackHole" for c in entity["Components"]):
                     entity["Components"].append({"$type":"BlackHole","Color":"RGBA(0.000,0.000,0.000,1.000)"})
                 for c in entity["Components"]:
@@ -754,7 +1028,7 @@ def convert_to_ubox(se_data, output_file="SE_Import.ubox",
             elif obj_type in ("neutronstar","whitedwarf"):
                 entity["Category"] = "star"
                 entity["Components"] = [c for c in entity.get("Components",[])
-                                         if c["$type"] not in ("SurfaceGridComponent","CompositionComponent")]
+                                         if c["$type"] != "CompositionComponent"]
                 if obj_type == "neutronstar":
                     for c in entity["Components"]:
                         if c["$type"] == "Celestial": c["MagneticField"] = 1e8
@@ -945,20 +1219,18 @@ def convert_to_ubox(se_data, output_file="SE_Import.ubox",
             ubox_sim["Entities"].append(rp)
 
     # Write .ubox archive
-    manifest = {
-        "Header":{"BuildRevision":46923,"BuildName":"Universe Sandbox",
-                  "LastModifiedUTC":now,"EntryPoints":[sim_id],"EntryPoint":sim_id},
-        "Entries":[
-            {"Name":sim_name,"AssetType":"JSON","BaseType":"Simulation",
-             "TypeName":"simulation.json","BuildRevision":46923,"LastModifiedUTC":now,
-             "Path":sfn,"ID":sim_id,"Dependencies":[{"$v":info_id},{"$v":ui_id}]},
-            {"Name":f"simulation-{sim_name}-info","AssetType":"JSON","BaseType":"WorkshopItem",
-             "TypeName":"info.json","BuildRevision":46923,"LastModifiedUTC":now,
-             "Path":ifn,"ID":info_id,"Dependencies":[]},
-            {"AssetType":"JSON","BaseType":"UIState","TypeName":"ui-state.json",
-             "BuildRevision":46923,"LastModifiedUTC":now,"Path":ufn,"ID":ui_id,"Dependencies":[]},
-        ],
-    }
+    manifest, surface_zip_id = build_manifest(
+        sim_name=sim_name,
+        sim_id=sim_id,
+        info_id=info_id,
+        ui_state_id=ui_id,
+        sim_path=sfn,
+        info_path=ifn,
+        ui_state_path=ufn,
+        now=now,
+        surface_zip_path=surface_zip_path,
+    )
+    validate_manifest(manifest, surface_zip_path, sim_name, surface_zip_payload)
     info = {"Header":{"BaseType":"WorkshopItem","AssetType":"JSON","TypeName":"info.json",
                        "BuildRevision":"46923","LastModifiedUTC":now},
             "Name":sim_name,"Description":"Imported from Space Engine.","Flags":"None",
@@ -972,10 +1244,10 @@ def convert_to_ubox(se_data, output_file="SE_Import.ubox",
         zf.writestr("manifest.json", json.dumps(manifest, indent=4))
         zf.writestr(ifn, json.dumps(info,     indent=4))
         zf.writestr(ufn, json.dumps(ui_state, indent=4))
-
+        if surface_zip_path and surface_zip_payload is not None:
+            zf.writestr(surface_zip_path, surface_zip_payload)
     _status("Finalizing conversion")
     print(f"Success  {len(ubox_sim['Entities'])} objects → {output_file}")
-
 
 # ─── US → SE back-export ─────────────────────────────────────────────────────
 

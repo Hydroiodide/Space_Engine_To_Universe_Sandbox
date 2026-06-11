@@ -73,6 +73,9 @@ class ConversionGUI:
         right_col = tk.Frame(cols)
         right_col.pack(side="left", fill="both", expand=True)
 
+        # Surface
+        self.surface_var = tk.BooleanVar(value=True)
+
         # Retention controls (left)
         self.total_standalone = self.total_rings = self.total_comets = 0
         filter_frame = tk.LabelFrame(left_col,
@@ -111,17 +114,42 @@ class ConversionGUI:
         self.rings_var         = tk.BooleanVar(value=True)
         self.export_comets_var = tk.BooleanVar(value=False)
         self.debug_var         = tk.BooleanVar(value=False)
+        self.inherit_moon_tilt_var    = tk.BooleanVar(value=True)
+        self.inherit_star_tilt_var    = tk.BooleanVar(value=False)
+        self.align_orbits_to_star_var = tk.BooleanVar(value=False)
         check_pairs = [
-            ("Export Moons",         self.moons_var),
-            ("Export Dwarf Moons",   self.dwarf_moons_var),
-            ("Export Dwarf Planets", self.dwarfs_var),
-            ("Export Rings",         self.rings_var),
-            ("Export Comets",        self.export_comets_var),
-            ("Enable Debug Logging", self.debug_var),
+            ("Export Moons",                        self.moons_var),
+            ("Export Dwarf Moons",                  self.dwarf_moons_var),
+            ("Export Dwarf Planets",                self.dwarfs_var),
+            ("Export Rings",                        self.rings_var),
+            ("Export Comets",                       self.export_comets_var),
+            ("Enable Debug Logging",                self.debug_var),
+            ("Align Moon Orbit to Parent Equator",  self.inherit_moon_tilt_var),
+            ("Binary Star Tilt Inheritance",        self.inherit_star_tilt_var),
+            ("Align Orbits to Star Equator",        self.align_orbits_to_star_var),
+            ("Generate Surface Data",               self.surface_var),
         ]
+
         for i, (text, var) in enumerate(check_pairs):
             tk.Checkbutton(check_frame, text=text, variable=var).grid(
                 row=i//2, column=i%2, sticky="w", padx=4, pady=1)
+
+        _TOOLTIPS = {
+            "Align Moon Orbit to Parent Equator":
+                "Moon orbit uses parent planet equatorial plane as reference",
+            "Binary Star Tilt Inheritance":
+                "Controls orbital frame inheritance in barycenter systems",
+            "Align Orbits to Star Equator":
+                "Forces planetary orbital plane alignment to star equator without affecting rotation",
+            "Generate Surface Data":
+                "Generates surface data for celestial bodies",
+        }
+        for widget in check_frame.winfo_children():
+            text = widget.cget("text") if hasattr(widget, "cget") else ""
+            tip  = _TOOLTIPS.get(text)
+            if tip:
+                widget.bind("<Enter>", lambda e, t=tip: self.status_var.set(t))
+                widget.bind("<Leave>", lambda e: self.status_var.set("Ready."))
 
         # ── Output ─────────────────────────────────────────────────────────────
         out_frame = tk.LabelFrame(root, text="Output Destination", padx=10, pady=6)
@@ -370,6 +398,12 @@ class ConversionGUI:
                     def _status(msg):
                         self._set_status(f"[{idx+1}/{n}] {fname} — {msg}…",
                                          base_progress + 2)
+
+                    import globals_compat as _gc
+                    _gc.INHERIT_MOON_AXIAL_TILT      = self.inherit_moon_tilt_var.get()
+                    _gc.INHERIT_STAR_AXIAL_TILT      = self.inherit_star_tilt_var.get()
+                    _gc.ALIGN_ORBITS_TO_STAR_EQUATOR = self.align_orbits_to_star_var.get()
+                    _gc.GENERATE_SURFACE_DATA        = self.surface_var.get()
 
                     convert_to_ubox(
                         se_data, out_ubox,
