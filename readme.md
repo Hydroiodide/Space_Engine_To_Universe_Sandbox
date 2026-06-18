@@ -12,49 +12,23 @@ Space Engine and Universe Sandbox use different physics models, simulation metho
 - Binary and multiple-star systems exported with suspended barycenter helper bodies; stars, planets, and moons remain free N-body objects with real positions and velocities
 - Correct axial-tilt inheritance — rings and moons orbit in the planet's equatorial plane
 - Gas giant cloud palettes matched to Space Engine surface presets and Sudarsky class
-<<<<<<< HEAD
-- Atmospheric scattering applied as a tint over existing cloud colours
-- Barycenter flattening with correct mass-ratio orbital scaling
-- Configurable keep-limits for belt asteroids, ring particles, and comets
-- Batch mode for converting an entire export folder at once
-- **Surface data generation** — procedural temperature, albedo, vapour pressure, and heat capacity maps written as a Universe Sandbox-compatible surface atlas
-- Surface atlas layout scales automatically with body count (1–256 bodies)
-- All Space Engine `Surface{}` parameters normalised to correct physical ranges before generation
-- Debug PNG export for visual verification of generated maps before packaging
-=======
 - Atmospheric color derived from Space Engine `Atmosphere.Model`, `Hue`, and `Saturation` using per-model color tables, not generic HSV conversion
 - Configurable keep-limits for belt asteroids, ring particles, and comets
 - Batch mode for converting an entire export folder at once
 - **Procedural surface maps** — temperature, albedo, vapour pressure, and heat capacity maps written as a Universe Sandbox-compatible surface atlas
 - Surface atlas layout scales automatically with body count (1–256 bodies)
 - Debug PNG export for visual verification of generated maps
->>>>>>> 6c2c4b4 (Big Update)
 
 ---
 
 ## Architecture
 
-<<<<<<< HEAD
-The project is split into six modules with a strict one-way dependency chain:
-
-=======
->>>>>>> 6c2c4b4 (Big Update)
 ```
 constants.py  ←  scanner.py  ←  builder.py  ←  converter.py  ←  surface_generator.py  ←  main.py
 ```
 
 | File | Responsibility |
 |---|---|
-<<<<<<< HEAD
-| `constants.py` | Physical constants, colour palettes, SE↔US lookup tables, global logging. No dependencies on other project files. |
-| `scanner.py` | `.sc` file parser, orbital element extraction, directory pre-scan, object filtering. |
-| `builder.py` | Universe Sandbox JSON entity assembly — orbits, rotation quaternions, ring particles, atmosphere depots, `SurfaceGridComponent` wiring. |
-| `converter.py` | Body classification, barycenter hierarchy flattening, the main `convert_to_ubox` loop, manifest generation, and validation. |
-| `surface_generator.py` | Procedural planetary map generation and surface atlas packing. Reads SE `Surface{}` parameters and writes `data.surface`, `material0–3.surface`, and `info` into a ZIP archive. |
-| `main.py` | Tkinter graphical interface, button callbacks, and the application entry point. |
-
-A seventh file, `globals_compat.py`, is a three-line shim that lets `builder.py` read UI flags (e.g. force-green for organic life) without importing `main.py`.
-=======
 | `constants.py` | Physical constants, colour palettes, SE↔US lookup tables, global logging |
 | `scanner.py` | `.sc` file parser, orbital element extraction, directory pre-scan, object filtering |
 | `builder.py` | Universe Sandbox JSON entity assembly — orbits, rotation, ring particles, atmosphere depots, `SurfaceGridComponent` |
@@ -63,7 +37,6 @@ A seventh file, `globals_compat.py`, is a three-line shim that lets `builder.py`
 | `main.py` | Tkinter graphical interface and application entry point |
 | `globals_compat.py` | Thin shim so `builder.py` can read runtime UI flags without importing `main.py` |
 | `description_generator.py` | Deterministic procedural system description generator |
->>>>>>> 6c2c4b4 (Big Update)
 
 ---
 
@@ -73,11 +46,6 @@ A seventh file, `globals_compat.py`, is a three-line shim that lets `builder.py`
 - [NumPy](https://numpy.org/) — required for surface map generation
 - [Pillow](https://python-pillow.org/) — required for debug PNG export
 
-<<<<<<< HEAD
-Install dependencies:
-
-=======
->>>>>>> 6c2c4b4 (Big Update)
 ```
 pip install numpy pillow
 ```
@@ -98,42 +66,18 @@ python main.py
 4. Set the output folder or leave it at the detected Universe Sandbox Simulations directory.
 5. Click **Convert**.
 
-<<<<<<< HEAD
-The log window shows progress in real time. Enable **Debug Logging** for verbose output.
-=======
 Exported simulations start paused by default at 1 simulated hour per real second. Both values can be changed in the advanced settings before export.
->>>>>>> 6c2c4b4 (Big Update)
 
 ---
 
 ## Build a standalone Windows executable
 
-<<<<<<< HEAD
-### 1. Install PyInstaller
-
-```
-pip install pyinstaller
-```
-
-### 2. Compile
-
-```
-pyinstaller --onefile --noconsole --name "SE-US2-Converter" --hidden-import numpy --hidden-import numpy.core --hidden-import PIL --hidden-import PIL.Image --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.filedialog --hidden-import tkinter.messagebox --collect-all numpy main.py
-```
-
-The compiled executable will be at `dist/SE-US2-Converter.exe`.
-
-### 3. Optional — include a custom icon
-
-Add `--icon icon.ico` to the command above.
-=======
 ```powershell
 python -m pip install pyinstaller numpy
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name "SE-US2-Converter" main.py
 ```
 
 Output: `dist\SE-US2-Converter.exe`
->>>>>>> 6c2c4b4 (Big Update)
 
 ---
 
@@ -146,20 +90,6 @@ Output: `dist\SE-US2-Converter.exe`
 
 ### Surface archive format
 
-<<<<<<< HEAD
-The surface archive (`simulation-<name>-surface.zip`) contains:
-
-| File | Content |
-|---|---|
-| `info` | `{"size": 512}` — atlas dimensions hint |
-| `data.surface` | Float32 RGBA atlas. ch0 = surface temperature (K), ch1 = diffuse albedo (0–1) |
-| `material0.surface` | ch0 = terrain mask, ch1 = vapour pressure (Pa), ch2 = secondary mask, ch3 = continuous mask |
-| `material1.surface` | ch1 = rock heat capacity (J/m²K) |
-| `material2.surface` | ch1 = water heat capacity (mat1 ÷ 3.728) |
-| `material3.surface` | ch1 = atmosphere heat capacity (mat1 ÷ 83.60) |
-
-Atlas layout scales with body count:
-=======
 | File | Content |
 |---|---|
 | `info` | `{"size": 512}` — atlas dimensions hint |
@@ -170,7 +100,6 @@ Atlas layout scales with body count:
 | `material3.surface` | ch1 = atmosphere heat capacity |
 
 Atlas layout by body count:
->>>>>>> 6c2c4b4 (Big Update)
 
 | Bodies | Body resolution | Grid |
 |---|---|---|
@@ -183,8 +112,6 @@ Atlas layout by body count:
 | 64 | 128 × 64 | 8 × 8 |
 | 128 | 128 × 32 | 8 × 16 |
 | 256 | 64 × 32 | 16 × 16 |
-<<<<<<< HEAD
-=======
 
 ---
 
@@ -226,7 +153,6 @@ Before writing the `.ubox` file, the converter validates:
 - Surface active-physics flags
 
 Validation errors stop export and are shown in the log window.
->>>>>>> 6c2c4b4 (Big Update)
 
 ---
 
@@ -236,16 +162,10 @@ Validation errors stop export and are shown in the log window.
 - Ring particle count defaults to 2000 per planet; raise the limit in the GUI if needed.
 - Procedural textures and volumetric clouds from Space Engine have no direct equivalent in Universe Sandbox and are approximated by palette selection.
 - Comet tails, nebulae, and galaxy objects are not converted.
-<<<<<<< HEAD
-- Surface maps are procedurally generated from Space Engine `Surface{}` parameters, not exported from Space Engine directly. Visual results approximate the source world but will not be pixel-accurate.
-- Gas, ice thickness, liquid depth, and temperature gradient views in Universe Sandbox are driven by its own physics simulation using the surface atlas as initial conditions. Results depend on the simulation state and may differ from Space Engine's rendering.
-- This project was developed with extensive assistance from AI tools. Some portions of the codebase, generated logic, and documentation may contain mistakes, inaccuracies, or incomplete implementations. Verify conversion results before relying on them for scientific or large-scale use. Report bugs with the source `.sc` file whenever possible.
-=======
 - Surface maps are procedurally generated from Space Engine `Surface{}` parameters, not exported from Space Engine directly.
 - Active legacy surface physics (non-default) can change pressure and temperature over time as Universe Sandbox runs its own climate simulation.
 - Very large systems may be slow to simulate in Universe Sandbox depending on hardware.
 - This project was developed with extensive AI assistance. Some portions may contain mistakes or incomplete implementations. Verify conversion results and report bugs with the source `.sc` file when possible.
->>>>>>> 6c2c4b4 (Big Update)
 
 ---
 
