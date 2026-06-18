@@ -1,13 +1,16 @@
 """main.py — Tkinter GUI and entry point."""
 
-import os, re, sys, shutil, threading, winsound
+import json, os, re, sys, shutil, threading, winsound
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import constants as _const
-from constants import log_debug, set_log_callback
+from constants import log_debug, set_log_callback, write_conversion_log
 from scanner import parse_se_file, prescan_sc_directory, apply_limit_filter
-from converter import convert_to_ubox, convert_ubox_zip_to_se, convert_ubox_json_to_se
+from converter import (
+    convert_to_ubox, convert_ubox_zip_to_se, convert_ubox_json_to_se,
+    validate_ubox_file,
+)
 
 # ── Try winsound gracefully on non-Windows ────────────────────────────────────
 try:
@@ -75,6 +78,7 @@ class ConversionGUI:
 
         # Surface
         self.surface_var = tk.BooleanVar(value=True)
+        self.surface_mode_var = tk.StringVar(value="Full US-like surface")
 
         # Retention controls (left)
         self.total_standalone = self.total_rings = self.total_comets = 0
@@ -105,9 +109,14 @@ class ConversionGUI:
         self.comet_entry.bind("<KeyRelease>",
             lambda e: self._update_live_label(self.comet_entry, self.comet_live_label, "comets"))
 
-        # Checkboxes (right)
-        check_frame = tk.LabelFrame(right_col, text="Export Options", padx=8, pady=4)
-        check_frame.pack(fill="x", pady=4)
+        # Basic and advanced export options.
+        options_book = ttk.Notebook(right_col)
+        options_book.pack(fill="x", pady=4)
+        basic_frame = tk.Frame(options_book, padx=8, pady=6)
+        advanced_frame = tk.Frame(options_book, padx=8, pady=6)
+        options_book.add(basic_frame, text="Basic")
+        options_book.add(advanced_frame, text="Advanced")
+
         self.moons_var         = tk.BooleanVar(value=True)
         self.dwarf_moons_var   = tk.BooleanVar(value=True)
         self.dwarfs_var        = tk.BooleanVar(value=True)
@@ -117,39 +126,197 @@ class ConversionGUI:
         self.inherit_moon_tilt_var    = tk.BooleanVar(value=True)
         self.inherit_star_tilt_var    = tk.BooleanVar(value=False)
         self.align_orbits_to_star_var = tk.BooleanVar(value=False)
-        check_pairs = [
+        self.normalize_atmosphere_var = tk.BooleanVar(value=False)
+        self.atmosphere_mode_var = tk.StringVar(value="Off")
+        self.start_paused_var = tk.BooleanVar(value=True)
+        self.start_realtime_var = tk.BooleanVar(value=True)
+        self.start_speed_value_var = tk.StringVar(value="1")
+        self.start_speed_unit_var = tk.StringVar(value="hours per real second")
+        self.disable_autospeed_var = tk.BooleanVar(value=False)
+        self.static_atmospheres_var = tk.BooleanVar(value=False)
+        self.lock_atm_depots_var = tk.BooleanVar(value=False)
+        self.strict_atm_mass_var = tk.BooleanVar(value=False)
+        self.strict_cloud_var = tk.BooleanVar(value=False)
+        self.surface_gas_channel_var = tk.StringVar(value="Off")
+        self.ocean_depot_mode_var = tk.StringVar(value="Legacy Oceans, Capped Lakes")
+        self.atm_depot_mode_var = tk.StringVar(value="None / safest")
+        self.surface_policy_var = tk.StringVar(value="No grid / safest")
+
+        basic_pairs = [
             ("Export Moons",                        self.moons_var),
             ("Export Dwarf Moons",                  self.dwarf_moons_var),
             ("Export Dwarf Planets",                self.dwarfs_var),
             ("Export Rings",                        self.rings_var),
             ("Export Comets",                       self.export_comets_var),
             ("Enable Debug Logging",                self.debug_var),
+            ("Generate Surface / Water Mask",       self.surface_var),
+            ("Normalize Space Engine Atmospheres",  self.normalize_atmosphere_var),
+        ]
+        for i, (text, var) in enumerate(basic_pairs):
+            tk.Checkbutton(basic_frame, text=text, variable=var).grid(
+                row=i // 2, column=i % 2, sticky="w", padx=4, pady=1)
+
+        basic_row = (len(basic_pairs) + 1) // 2
+        tk.Label(basic_frame, text="Surface Mode:").grid(
+            row=basic_row, column=0, sticky="w", padx=4, pady=2)
+        self.surface_mode_combo = ttk.Combobox(
+            basic_frame,
+            textvariable=self.surface_mode_var,
+            values=(
+                "Liquid / Water Mask Only",
+                "Preview only / safe",
+                "Full US-like surface",
+                "Active legacy / dangerous",
+                "Off",
+            ),
+            state="readonly",
+            width=29,
+        )
+        self.surface_mode_combo.grid(
+            row=basic_row, column=1, sticky="w", padx=4, pady=2)
+
+        tk.Label(basic_frame, text="Atmosphere Mode:").grid(
+            row=basic_row + 1, column=0, sticky="w", padx=4, pady=2)
+        self.atmosphere_mode_combo = ttk.Combobox(
+            basic_frame,
+            textvariable=self.atmosphere_mode_var,
+            values=("Off", "Stability", "Habitability", "Aggressive"),
+            state="readonly",
+            width=18,
+        )
+        self.atmosphere_mode_combo.grid(
+            row=basic_row + 1, column=1, sticky="w", padx=4, pady=2)
+
+        advanced_pairs = [
             ("Align Moon Orbit to Parent Equator",  self.inherit_moon_tilt_var),
             ("Binary Star Tilt Inheritance",        self.inherit_star_tilt_var),
             ("Align Orbits to Star Equator",        self.align_orbits_to_star_var),
-            ("Generate Surface Data",               self.surface_var),
+            ("Static Imported Atmospheres",         self.static_atmospheres_var),
+            ("Lock Imported Atmospheric Depots",    self.lock_atm_depots_var),
+            ("Strict Atmosphere Mass Validation",   self.strict_atm_mass_var),
+            ("Strict Cloud Coverage Validation",    self.strict_cloud_var),
+            ("Start Simulation Paused",             self.start_paused_var),
+            ("Apply startup speed",                 self.start_realtime_var),
+            ("Disable Auto-Speed on Export",        self.disable_autospeed_var),
         ]
-
-        for i, (text, var) in enumerate(check_pairs):
-            tk.Checkbutton(check_frame, text=text, variable=var).grid(
+        for i, (text, var) in enumerate(advanced_pairs):
+            tk.Checkbutton(advanced_frame, text=text, variable=var).grid(
                 row=i//2, column=i%2, sticky="w", padx=4, pady=1)
 
-        _TOOLTIPS = {
-            "Align Moon Orbit to Parent Equator":
-                "Moon orbit uses parent planet equatorial plane as reference",
-            "Binary Star Tilt Inheritance":
-                "Controls orbital frame inheritance in barycenter systems",
-            "Align Orbits to Star Equator":
-                "Forces planetary orbital plane alignment to star equator without affecting rotation",
-            "Generate Surface Data":
-                "Generates surface data for celestial bodies",
-        }
-        for widget in check_frame.winfo_children():
-            text = widget.cget("text") if hasattr(widget, "cget") else ""
-            tip  = _TOOLTIPS.get(text)
-            if tip:
-                widget.bind("<Enter>", lambda e, t=tip: self.status_var.set(t))
-                widget.bind("<Leave>", lambda e: self.status_var.set("Ready."))
+        speed_row = (len(advanced_pairs) + 1) // 2
+        tk.Label(advanced_frame, text="Startup Speed:").grid(
+            row=speed_row, column=0, sticky="w", padx=4, pady=2)
+        speed_controls = tk.Frame(advanced_frame)
+        speed_controls.grid(row=speed_row, column=1, sticky="w", padx=4, pady=2)
+        tk.Entry(
+            speed_controls, textvariable=self.start_speed_value_var, width=8
+        ).pack(side="left", padx=(0, 4))
+        ttk.Combobox(
+            speed_controls,
+            textvariable=self.start_speed_unit_var,
+            values=(
+                "seconds per real second",
+                "minutes per real second",
+                "hours per real second",
+                "days per real second",
+                "years per real second",
+            ),
+            state="readonly",
+            width=24,
+        ).pack(side="left")
+
+        gas_row = speed_row + 1
+        tk.Label(advanced_frame, text="Surface Gas Channel:").grid(
+            row=gas_row, column=0, sticky="w", padx=4, pady=2)
+        self.surface_gas_channel_combo = ttk.Combobox(
+            advanced_frame,
+            textvariable=self.surface_gas_channel_var,
+            values=("Off", "Pressure-derived", "Raw legacy"),
+            state="readonly",
+            width=18,
+        )
+        self.surface_gas_channel_combo.grid(row=gas_row, column=1, sticky="w", padx=4, pady=2)
+
+        ocean_row = gas_row + 1
+        tk.Label(advanced_frame, text="Ocean Depot Export Mode:").grid(
+            row=ocean_row, column=0, sticky="w", padx=4, pady=2)
+        self.ocean_depot_mode_combo = ttk.Combobox(
+            advanced_frame,
+            textvariable=self.ocean_depot_mode_var,
+            values=("Visual only", "Capped", "Legacy Oceans, Capped Lakes"),
+            state="readonly",
+            width=18,
+        )
+        self.ocean_depot_mode_combo.grid(row=ocean_row, column=1, sticky="w", padx=4, pady=2)
+
+        atm_depot_row = ocean_row + 1
+        tk.Label(advanced_frame, text="Static Atm Depot Mode:").grid(
+            row=atm_depot_row, column=0, sticky="w", padx=4, pady=2)
+        self.atm_depot_mode_combo = ttk.Combobox(
+            advanced_frame,
+            textvariable=self.atm_depot_mode_var,
+            values=(
+                "None / safest",
+                "Carrier unlocked",
+                "Carrier locked",
+                "Chemical unlocked / test",
+                "Chemical locked / test",
+            ),
+            state="readonly",
+            width=24,
+        )
+        self.atm_depot_mode_combo.grid(row=atm_depot_row, column=1, sticky="w", padx=4, pady=2)
+
+        surface_policy_row = atm_depot_row + 1
+        tk.Label(advanced_frame, text="Atm Surface Policy:").grid(
+            row=surface_policy_row, column=0, sticky="w", padx=4, pady=2)
+        self.surface_policy_combo = ttk.Combobox(
+            advanced_frame,
+            textvariable=self.surface_policy_var,
+            values=(
+                "No grid / safest",
+                "Passive grid / experimental",
+                "Active legacy / dangerous",
+            ),
+            state="readonly",
+            width=24,
+        )
+        self.surface_policy_combo.grid(row=surface_policy_row, column=1, sticky="w", padx=4, pady=2)
+
+        tk.Label(
+            advanced_frame,
+            text=("Warning: active surface physics and legacy ocean depots can make "
+                  "Universe Sandbox rewrite atmosphere pressure."),
+            fg="#a33",
+            wraplength=390,
+            justify="left",
+        ).grid(row=surface_policy_row + 1, column=0, columnspan=2, sticky="w", padx=4, pady=(6, 2))
+        _GAS_CHANNEL_TIP = (
+            "Off is safest. Prevents material0.surface ch1 from fighting AtmosphereMass. "
+            "Pressure-derived: safe visual map capped to atmosphere. Raw legacy: original behavior."
+        )
+        self.surface_gas_channel_combo.bind(
+            "<Enter>", lambda e: self.status_var.set(_GAS_CHANNEL_TIP))
+        self.surface_gas_channel_combo.bind(
+            "<Leave>", lambda e: self.status_var.set("Ready."))
+        _OCEAN_DEPOT_TIP = (
+            "Visual only is safest: oceans use appearance and surface liquid maps without "
+            "adding active volatile mass. Capped retains a tiny locked reservoir. Legacy "
+            "exports full physical ocean mass and may change atmosphere pressure."
+        )
+        self.ocean_depot_mode_combo.bind(
+            "<Enter>", lambda e: self.status_var.set(_OCEAN_DEPOT_TIP))
+        self.ocean_depot_mode_combo.bind(
+            "<Leave>", lambda e: self.status_var.set("Ready."))
+        _SURFACE_MODE_TIP = (
+            "Liquid / Water Mask Only attaches only material0 ch3, where water is white/high "
+            "and land is black/low. Full US-like preserves canonical visual/material channels; "
+            "Active legacy may rewrite imported atmosphere pressure."
+        )
+        self.surface_mode_combo.bind(
+            "<Enter>", lambda e: self.status_var.set(_SURFACE_MODE_TIP))
+        self.surface_mode_combo.bind(
+            "<Leave>", lambda e: self.status_var.set("Ready."))
 
         # ── Output ─────────────────────────────────────────────────────────────
         out_frame = tk.LabelFrame(root, text="Output Destination", padx=10, pady=6)
@@ -349,6 +516,8 @@ class ConversionGUI:
         _const.DEBUG_MODE = self.debug_var.get()
         if _const.DEBUG_MODE:
             set_log_callback(self.log_message)
+        else:
+            set_log_callback(None)
         self._failure_details = []
         self.progress_bar.config(value=0)
         self.status_var.set("Starting conversion…")
@@ -378,9 +547,14 @@ class ConversionGUI:
             successful = 0
             failed     = 0
             failures   = []
+            reports    = []
 
             for idx, sc_file in enumerate(files_to_convert):
                 fname = os.path.basename(sc_file)
+                base = os.path.splitext(fname)[0]
+                safe = re.sub(r'[\\/*?:"<>|]', "", base).strip() or "SE_Import"
+                out_ubox = os.path.join(self.out_dir_var.get(), safe + ".ubox")
+                file_log_start = len(_const.CONVERSION_LOG)
                 base_progress = int(idx / max(n, 1) * 100)
                 self._set_status(f"[{idx+1}/{n}] Loading {fname}…", base_progress)
 
@@ -391,10 +565,6 @@ class ConversionGUI:
                         failures.append((fname, "file", "Parsing", "No objects found"))
                         failed += 1; continue
 
-                    base     = os.path.splitext(fname)[0]
-                    safe     = re.sub(r'[\\/*?:"<>|]', "", base).strip() or "SE_Import"
-                    out_ubox = os.path.join(self.out_dir_var.get(), safe + ".ubox")
-
                     def _status(msg):
                         self._set_status(f"[{idx+1}/{n}] {fname} — {msg}…",
                                          base_progress + 2)
@@ -403,9 +573,100 @@ class ConversionGUI:
                     _gc.INHERIT_MOON_AXIAL_TILT      = self.inherit_moon_tilt_var.get()
                     _gc.INHERIT_STAR_AXIAL_TILT      = self.inherit_star_tilt_var.get()
                     _gc.ALIGN_ORBITS_TO_STAR_EQUATOR = self.align_orbits_to_star_var.get()
-                    _gc.GENERATE_SURFACE_DATA        = self.surface_var.get()
+                    _gc_surface_map = {
+                        "Off": (False, "none", False, False),
+                        "Preview only / safe": (True, "preview_only", False, False),
+                        "Liquid / Water Mask Only": (
+                            True, "liquid_mask_only", True, False
+                        ),
+                        "Full US-like surface": (
+                            True, "full_us_like", True, False
+                        ),
+                        "Active legacy / dangerous": (
+                            True, "active_legacy", True, True
+                        ),
+                    }
+                    _surface_settings = _gc_surface_map.get(
+                        self.surface_mode_var.get(),
+                        (True, "full_us_like", True, False),
+                    )
+                    if not self.surface_var.get():
+                        _surface_settings = (False, "none", False, False)
+                    (
+                        _gc.GENERATE_SURFACE_DATA,
+                        _gc.SURFACE_DATA_MODE,
+                        _gc.ATTACH_SURFACE_GRID_COMPONENT,
+                        _gc.ACTIVE_SURFACE_PHYSICS,
+                    ) = _surface_settings
+                    _gc.NORMALIZE_SE_ATMOSPHERE      = self.normalize_atmosphere_var.get()
+                    _gc.NORMALIZE_SE_ATMOSPHERE_MODE = (
+                        self.atmosphere_mode_var.get().strip().lower()
+                        if self.normalize_atmosphere_var.get() else "off"
+                    )
+                    _gc.START_PAUSED = self.start_paused_var.get()
+                    _gc.START_SIMULATION_SPEED_REALTIME = self.start_realtime_var.get()
+                    speed_multipliers = {
+                        "seconds per real second": 1.0,
+                        "minutes per real second": 60.0,
+                        "hours per real second": 3600.0,
+                        "days per real second": 86400.0,
+                        "years per real second": 31557600.0,
+                    }
+                    startup_speed = float(self.start_speed_value_var.get().strip())
+                    if startup_speed <= 0.0:
+                        raise ValueError("Startup speed must be greater than zero.")
+                    _gc.DEFAULT_TIME_STEP_PER_REAL_SEC = (
+                        startup_speed * speed_multipliers[self.start_speed_unit_var.get()]
+                    )
+                    _gc.DISABLE_AUTOSPEED_ON_EXPORT = self.disable_autospeed_var.get()
+                    _gc.STATIC_IMPORTED_ATMOSPHERES = self.static_atmospheres_var.get()
+                    _gc.PRESERVE_SE_ATMOSPHERE_PRESSURE = self.static_atmospheres_var.get()
+                    _gc.LOCK_IMPORTED_ATMOSPHERIC_DEPOTS = self.lock_atm_depots_var.get()
+                    _gc.LOCK_IMPORTED_LIQUID_DEPOTS = True
+                    _gc.STRICT_ATMOSPHERE_MASS_CONSISTENCY = self.strict_atm_mass_var.get()
+                    _gc.STRICT_CLOUD_COVERAGE_VALIDATION = self.strict_cloud_var.get()
+                    _gc_gas_map = {
+                        "Off": "off",
+                        "Pressure-derived": "pressure",
+                        "Raw legacy": "raw",
+                    }
+                    _gc.SURFACE_GAS_PRESSURE_MODE = _gc_gas_map.get(
+                        self.surface_gas_channel_var.get(), "off")
+                    _gc_ocean_map = {
+                        "Visual only": "visual_only",
+                        "Capped": "capped",
+                        "Legacy Oceans, Capped Lakes": "legacy",
+                        "Legacy full mass": "legacy",  # back-compat for any saved preference
+                    }
+                    _gc.OCEAN_DEPOT_EXPORT_MODE = _gc_ocean_map.get(
+                        self.ocean_depot_mode_var.get(), "legacy")
+                    _gc.EXPORT_FULL_OCEAN_MASS_AS_DEPOT = (
+                        _gc.OCEAN_DEPOT_EXPORT_MODE == "legacy"
+                    )
+                    _gc.REMOVE_OCEAN_WATER_FROM_VOLATILE_DEPOTS_FOR_STATIC_ATMOSPHERES = (
+                        _gc.OCEAN_DEPOT_EXPORT_MODE == "visual_only"
+                    )
+                    _gc.CAP_SURFACE_WATER_DEPOT_FOR_STATIC_ATMOSPHERES = (
+                        _gc.OCEAN_DEPOT_EXPORT_MODE == "capped"
+                    )
+                    _gc_atm_depot_map = {
+                        "None / safest":           "none",
+                        "Carrier unlocked":        "carrier_unlocked",
+                        "Carrier locked":          "carrier_locked",
+                        "Chemical unlocked / test": "chemical_unlocked",
+                        "Chemical locked / test":   "chemical_locked",
+                    }
+                    _gc.STATIC_ATMOSPHERE_DEPOT_MODE = _gc_atm_depot_map.get(
+                        self.atm_depot_mode_var.get(), "none")
+                    _gc_policy_map = {
+                        "No grid / safest":          "no_grid",
+                        "Passive grid / experimental": "passive_grid",
+                        "Active legacy / dangerous":  "active_legacy",
+                    }
+                    _gc.STATIC_IMPORTED_ATMOSPHERE_SURFACE_POLICY = _gc_policy_map.get(
+                        self.surface_policy_var.get(), "no_grid")
 
-                    convert_to_ubox(
+                    report = convert_to_ubox(
                         se_data, out_ubox,
                         belt_asteroid_input  = self.belt_entry.get().strip(),
                         planetary_ring_input = self.planetary_ring_entry.get().strip(),
@@ -416,7 +677,9 @@ class ConversionGUI:
                         export_dwarf_planets = self.dwarfs_var.get(),
                         export_rings         = self.rings_var.get(),
                         status_callback      = _status,
+                        source_name          = fname,
                     )
+                    reports.append(report)
 
                     if self.auto_export_var.get():
                         auto_path = os.path.expanduser(
@@ -431,22 +694,55 @@ class ConversionGUI:
 
                 except Exception as e:
                     exc_text = tb.format_exc()
-                    stage    = str(e)[:120]
-                    failures.append((fname, "conversion", stage, exc_text))
+                    stage = "Validation" if "validation failed" in str(e).lower() else "Conversion"
+                    debug_log_path = None
+                    log_debug(f"{fname}: {exc_text}", "ERROR")
                     if _const.DEBUG_MODE:
+                        debug_log_path = os.path.splitext(out_ubox)[0] + "-conversion.log"
+                        try:
+                            write_conversion_log(debug_log_path, file_log_start)
+                        except OSError as log_error:
+                            log_debug(f"Could not save debug log: {log_error}", "ERROR")
+                            debug_log_path = None
                         self.root.after(0, lambda m=exc_text: self.log_message(m))
+                    reason = str(e)[:240]
+                    if debug_log_path:
+                        reason += f"\nDebug log: {os.path.abspath(debug_log_path)}"
+                    failures.append((fname, "conversion", stage, reason))
                     failed += 1
 
             # ── Summary ────────────────────────────────────────────────────────
             self.progress_bar.config(value=100)
             if not failures:
-                summary = (f"Done. {successful}/{n} file(s) converted successfully.")
+                warning_count = sum(report.get("warning_count", 0) for report in reports)
+                surface_slots = sum(report.get("surface_slots", 0) for report in reports)
+                surface_bodies = sum(
+                    report.get("surface_bodies_generated", 0) for report in reports
+                )
+                surface_enabled = any(report.get("surface_enabled") for report in reports)
+                lines = [f"Done. {successful}/{n} converted successfully."]
+                for report in reports:
+                    lines.append(f"Output: {report['output_path']}")
+                lines.append(f"Warnings: {warning_count}")
+                lines.append(
+                    f"Surface data: {'enabled' if surface_enabled else 'disabled'}, "
+                    f"{surface_bodies} body map(s) generated, "
+                    f"{surface_slots} active atlas slot(s) attached"
+                )
+                debug_paths = [report.get("debug_log_path") for report in reports
+                               if report.get("debug_log_path")]
+                if debug_paths:
+                    lines.append("Debug log: " + debug_paths[0])
+                summary = "\n".join(lines)
             else:
                 lines = [f"Done. {successful} succeeded, {failed} failed.\n"]
                 for fname, obj, stage, reason in failures:
-                    lines.append(f"  ✗ {fname}")
+                    lines.append(f"  Failed: {fname}")
                     lines.append(f"      Stage  : {stage}")
-                    lines.append(f"      Reason : {reason[:200]}")
+                    lines.append(f"      Reason : {reason}")
+                warning_count = sum(report.get("warning_count", 0) for report in reports)
+                if reports:
+                    lines.append(f"\nWarnings in successful outputs: {warning_count}")
                 summary = "\n".join(lines)
 
             self.root.after(0, lambda s=summary: self.status_var.set(s))
@@ -469,7 +765,23 @@ def launch_gui():
     root.mainloop()
 
 
-def main():
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("--validate", "--validate-output"):
+        if len(argv) != 2:
+            print("Usage: python main.py --validate path/to/file.ubox")
+            return 2
+        try:
+            result = validate_ubox_file(argv[1])
+        except Exception as exc:
+            print(f"Validation failed: {exc}")
+            return 1
+        print(json.dumps(result, indent=2))
+        return 0
+    if argv and argv[0] in ("-h", "--help"):
+        print("Usage:\n  python main.py\n  python main.py --validate path/to/file.ubox")
+        return 0
+
     sc_files   = [f for f in os.listdir(".") if f.endswith(".sc")]
     ubox_files = [f for f in os.listdir(".")
                   if f.endswith(".ubox") or
@@ -490,7 +802,11 @@ def main():
             print("Error  No data parsed")
     if not sc_files and not ubox_files:
         print("Error  No .sc or .ubox files found")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        raise SystemExit(main())
     launch_gui()

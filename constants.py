@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 DEBUG_MODE: bool = False
 CONVERSION_LOG: list = []
 LOG_CALLBACK = None
+CONVERTER_VERSION = "0.9.0-beta"
 
 
 def log_debug(msg: str, level: str = "INFO") -> None:
@@ -36,6 +37,15 @@ def set_log_callback(callback) -> None:
     LOG_CALLBACK = callback
 
 
+def write_conversion_log(path: str, start_index: int = 0) -> str:
+    """Write captured converter logs and return the absolute path."""
+    log_path = str(path)
+    with open(log_path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(CONVERSION_LOG[max(0, start_index):]))
+        handle.write("\n")
+    return log_path
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PHYSICAL CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,10 +55,80 @@ AU_TO_KM:               float = 149_597_870.7
 EARTH_MASS_KG:          float = 5.97219e24
 SOLAR_MASS_KG:          float = 1.98847e30
 EARTH_RADIUS_M:         float = 6_371_000.0
+EARTH_ATMOSPHERE_MASS_KG: float = 5.148e18
+EARTH_OCEAN_MASS_US:      float = 1.429662258654e21
+STD_ATM_PA:              float = 101_325.0
 SOLAR_RADIUS_M:         float = 695_700_000.0
 GRAVITATIONAL_CONSTANT: float = 6.6740831e-11
 GYR_TO_SECONDS:         float = 3.15576e16
 TOKEN_MASS:             float = 1e7
+TRACE_PERCENT:          float = 1e-8
+TRACE_PLACEHOLDER_MASS: float = 1000.0
+USE_BUILTIN_HEIGHTMAP_OVERLAYS: bool = True
+DISABLE_BUILTIN_HEIGHTMAPS_FOR_GENERATED_SURFACES: bool = False
+FORCE_PROCEDURAL_APPEARANCE: bool = True
+ALLOW_EARTH_DEFAULT_ASSETS: bool = False
+ALLOW_CITY_LIGHT_SOURCE_0: bool = False
+USE_PROCEDURAL_CITY_LIGHT_SOURCE: bool = True
+PROCEDURAL_CITY_LIGHT_SOURCE: int = 1
+ALLOW_BUILTIN_EARTH_CITY_TEXTURE: bool = ALLOW_EARTH_DEFAULT_ASSETS
+GENERATE_CITY_LIGHTS_FOR_LIFE_WORLDS: bool = False
+GENERATE_CITY_LIGHTS_FOR_HABITABLE_WORLDS: bool = False
+GENERATE_CITY_LIGHTS_FOR_MULTICELLULAR_TERRESTRIAL: bool = False
+GENERATE_CITY_LIGHTS_ONLY_IF_CIVILIZED: bool = True
+CITY_LIGHT_SOURCE_FOR_PROCEDURAL: int = PROCEDURAL_CITY_LIGHT_SOURCE
+CONFIG_ENABLE_MICROBIAL_SURFACE_MATS: bool = False
+ALLOW_PRESET_PLANTS_WITHOUT_LIFE: bool = False
+ALLOW_EARTH_HEIGHTMAP_FOR_NON_EARTH: bool = False
+ALLOW_EARTH_TEXTURES_ONLY_FOR_EXPLICIT_EARTH: bool = True
+
+# Space Engine atmosphere chemistry normalization.
+NORMALIZE_SE_ATMOSPHERE: bool = False
+NORMALIZE_SE_ATMOSPHERE_MODE: str = "off"
+NORMALIZE_ATMOSPHERE_PRESERVE_TOTAL_PRESSURE: bool = True
+NORMALIZE_H2O_VAPOR_TO_SATURATION: bool = True
+NORMALIZE_SO2_ON_WET_OXYGENATED_WORLDS: bool = True
+NORMALIZE_CO2_FOR_HABITABLE_WORLDS: bool = True
+ATMOSPHERE_NORMALIZER_ONLY_FOR_SOLID_WORLDS: bool = True
+ATMOSPHERE_NORMALIZER_SKIP_VENUS_LIKE: bool = True
+ATMOSPHERE_NORMALIZER_SKIP_GAS_GIANTS: bool = True
+STRICT_ATMOSPHERE_MASS_CONSISTENCY: bool = False
+STRICT_CLOUD_COVERAGE_VALIDATION: bool = False
+ATMOSPHERE_READBACK_TOLERANCE: float = 0.20
+
+# Imported atmosphere preservation — prevent US from overwriting exported mass.
+PRESERVE_SE_ATMOSPHERE_PRESSURE: bool = True
+STATIC_IMPORTED_ATMOSPHERES: bool = False
+SURFACE_GAS_PRESSURE_MODE: str = "off"   # "off" | "pressure" | "raw"
+SURFACE_DATA_MODE: str = "full_us_like"  # "none" | "preview_only" | "liquid_mask_only" | "full_us_like" | "active_legacy"
+ATTACH_SURFACE_GRID_COMPONENT: bool = True
+ACTIVE_SURFACE_PHYSICS: bool = False
+SAFE_SURFACE_EXPORT_ICE_MASK: bool = True
+OCEAN_DEPOT_EXPORT_MODE: str = "legacy"  # "visual_only" | "capped" | "legacy"
+LOCK_IMPORTED_ATMOSPHERIC_DEPOTS: bool = False
+LOCK_IMPORTED_LIQUID_DEPOTS: bool = False
+CAP_SURFACE_WATER_DEPOT_FOR_STATIC_ATMOSPHERES: bool = True
+REMOVE_OCEAN_WATER_FROM_VOLATILE_DEPOTS_FOR_STATIC_ATMOSPHERES: bool = True
+MAX_STATIC_SURFACE_WATER_DEPOT_FRACTION_OF_ATMOSPHERE: float = 0.02
+MAX_STATIC_SURFACE_OTHER_VOLATILE_FRACTION_OF_ATMOSPHERE: float = 0.001
+EXPORT_FULL_OCEAN_MASS_AS_DEPOT: bool = False
+STATIC_ATMOSPHERE_DEPOT_MODE: str = "none"
+# "none" | "carrier_unlocked" | "carrier_locked" | "chemical_unlocked" | "chemical_locked"
+STATIC_ATMOSPHERE_CARRIER_DEFAULT: str = "Nitrogen"
+STATIC_ATMOSPHERE_CARRIER_COLD: str = "Helium"
+STATIC_IMPORTED_ATMOSPHERE_SURFACE_POLICY: str = "no_grid"
+# "no_grid" | "passive_grid" | "active_legacy"
+
+# Safe startup state for exported simulations.
+START_PAUSED: bool = True
+START_SIMULATION_SPEED_REALTIME: bool = True
+DEFAULT_TIME_STEP_PER_REAL_SEC: float = 3600.0
+DISABLE_AUTOSPEED_ON_EXPORT: bool = False
+
+# US treats CompositionComponent volatile mass as an available surface reservoir.
+LACUSTRINE_DEPOT_MASS_SCALE: float = 5e-4
+MAX_SOLID_PLANET_SURFACE_VOLATILE_FRACTION: float = 1e-4
+MAX_LACUSTRINE_VOLATILE_FRACTION: float = 1e-8
 
 # Runtime state
 SYSTEM_AGE_SECONDS = None
@@ -67,7 +147,7 @@ VALID_SE_TYPES: set = {
 # SE → US ATMOSPHERE DEPOT MAPPING
 # ─────────────────────────────────────────────────────────────────────────────
 
-SE_TO_US_DEPOT: dict = {
+SE_ATMOSPHERE_TO_US_DEPOT: dict = {
     "N2":    "Nitrogen",
     "CH4":   "Methane",
     "H2":    "Hydrogen",
@@ -89,8 +169,98 @@ SE_TO_US_DEPOT: dict = {
     "SO":    "Sulfur Dioxide",
     "H2S":   "Sulfur Dioxide",
     "Cl2":   "Oxygen",
-    "NaCl":  "Argon",
 }
+
+# Oceans share only a few phase-safe volatile depots with Universe Sandbox.
+# Dissolved salts and gases remain visual/debug metadata; mapping NaCl to Argon
+# would create an enormous active atmospheric reservoir.
+SE_OCEAN_TO_US_DEPOT: dict = {
+    "H2O": "Water",
+    "CH4": "Methane",
+    "C2H6": "Methane",
+    "NH3": "Ammonia",
+}
+
+# Backward-compatible atmosphere mapping used by older call sites.
+SE_TO_US_DEPOT: dict = SE_ATMOSPHERE_TO_US_DEPOT
+
+
+def se_bool(value) -> bool:
+    return str(value).strip().lower() in ("true", "1", "yes")
+
+
+_LIFE_CLASSES = {"organic": "Organic", "exotic": "Exotic"}
+_LIFE_TYPES = {"unicellular": "Unicellular", "multicellular": "Multicellular"}
+_LIFE_BIOMES = {
+    "subglacial": "Subglacial",
+    "aerial": "Aerial",
+    "marine": "Marine",
+    "terrestrial": "Terrestrial",
+}
+
+
+def _split_life_values(value) -> set:
+    if value is None:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        raw_parts = []
+        for item in value:
+            raw_parts.extend(_split_life_values(item))
+        return set(raw_parts)
+    text = str(value).strip().strip('"').strip("'")
+    if not text:
+        return set()
+    return {part.strip().lower() for part in re.split(r"[/,;|]+", text) if part.strip()}
+
+
+def parse_life_block(life_block) -> dict:
+    classes = set()
+    types = set()
+    biomes = set()
+    if isinstance(life_block, dict):
+        for token in _split_life_values(life_block.get("Class")):
+            if token in _LIFE_CLASSES:
+                classes.add(_LIFE_CLASSES[token])
+        for token in _split_life_values(life_block.get("Type")):
+            if token in _LIFE_TYPES:
+                types.add(_LIFE_TYPES[token])
+        for token in _split_life_values(life_block.get("Biome")):
+            if token in _LIFE_BIOMES:
+                biomes.add(_LIFE_BIOMES[token])
+    elif life_block:
+        text_tokens = _split_life_values(life_block)
+        for token in text_tokens:
+            if token in _LIFE_CLASSES:
+                classes.add(_LIFE_CLASSES[token])
+            if token in _LIFE_TYPES:
+                types.add(_LIFE_TYPES[token])
+            if token in _LIFE_BIOMES:
+                biomes.add(_LIFE_BIOMES[token])
+
+    has_life = bool(classes or types or biomes or isinstance(life_block, dict))
+    return {
+        "has_life": has_life,
+        "classes": classes,
+        "types": types,
+        "biomes": biomes,
+        "is_organic": "Organic" in classes,
+        "is_exotic": "Exotic" in classes,
+        "is_unicellular": "Unicellular" in types,
+        "is_multicellular": "Multicellular" in types,
+        "has_subglacial": "Subglacial" in biomes,
+        "has_aerial": "Aerial" in biomes,
+        "has_marine": "Marine" in biomes,
+        "has_terrestrial": "Terrestrial" in biomes,
+    }
+
+
+def choose_life_debug_color(life_info) -> str | None:
+    info = life_info if isinstance(life_info, dict) else parse_life_block(life_info)
+    if info.get("is_exotic"):
+        return "RGBA(1.000, 0.000, 1.000, 1.000)"
+    if info.get("is_organic"):
+        return "RGBA(0.000, 1.000, 0.000, 1.000)"
+    return None
 
 US_ATM_DEPOT_KEYS: list = [
     "Iron", "Silicate", "Argon", "Sulfur Dioxide", "Oxygen",
@@ -107,6 +277,12 @@ US_CLOUD_STYLES: dict = {
 # ─── STELLAR CLASS → US TYPE MAPPING ─────────────────────────────────────────
 US_STAR_TYPE_MAIN_SEQUENCE = 1
 US_STAR_TYPE_NEUTRON        = 4
+US_STAR_TYPE_SPECIAL        = 0   # black holes, brown dwarfs, planemos, wormholes
+US_STAR_TYPE_WHITE_DWARF    = 3
+
+US_CATEGORY_BLACK_HOLE      = 1
+US_CATEGORY_STAR            = 2
+US_CATEGORY_BROWN_DWARF     = 3
 
 SE_LUMINOSITY_CLASS_NAMES: dict = {
     "Ia":"Hypergiant/Supergiant Ia","Iab":"Supergiant Iab","Ib":"Supergiant Ib",
@@ -162,6 +338,177 @@ _BLACK: str = "RGBA(0.000, 0.000, 0.000, 1.000)"
 _WHITE: str = "RGBA(1.000, 1.000, 1.000, 1.000)"
 _WATER: str = "RGBA(0.100, 0.200, 0.500, 1.000)"
 _TRANS: str = "RGBA(0.000, 0.000, 0.000, 0.000)"
+
+WATER_COLORS: dict = {
+    "default": "RGBA(0.169, 0.341, 0.498, 1.000)",
+    "blue_seas": "RGBA(0.120, 0.330, 0.550, 1.000)",
+    "yellow_seas": "RGBA(0.650, 0.520, 0.180, 1.000)",
+    "titan": "RGBA(0.560, 0.360, 0.120, 1.000)",
+    "oil": "RGBA(0.060, 0.055, 0.045, 1.000)",
+    "carbon_black": "RGBA(0.050, 0.050, 0.045, 1.000)",
+    "icy_blue": "RGBA(0.140, 0.300, 0.460, 1.000)",
+}
+
+ATMOSPHERE_MODEL_COLORS: dict = {
+    "Earth":    "RGBA(0.227, 0.604, 1.000, 1.000)",
+    "Biogenic": "RGBA(0.227, 0.604, 1.000, 1.000)",
+    "Thin":     "RGBA(0.450, 0.620, 0.850, 1.000)",
+    "Mars":     "RGBA(0.780, 0.470, 0.270, 1.000)",
+    "Venus":    "RGBA(0.900, 0.720, 0.420, 1.000)",
+    "Thick":    "RGBA(0.800, 0.650, 0.450, 1.000)",
+    "Titan":    "RGBA(0.850, 0.560, 0.220, 1.000)",
+    "Pluto":    "RGBA(0.550, 0.700, 0.900, 1.000)",
+    "Chlorine": "RGBA(0.500, 0.850, 0.250, 1.000)",
+    "Jupiter":  "RGBA(0.760, 0.620, 0.460, 1.000)",
+    "Neptune":  "RGBA(0.250, 0.450, 0.950, 1.000)",
+    "Ethereal": "RGBA(0.650, 0.750, 1.000, 1.000)",
+}
+
+# Space Engine cyclic hue key order (used for table interpolation)
+SE_HUE_KEYS: list = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, -0.5, -0.4, -0.3, -0.2, -0.1]
+
+# Per-model SE hue → visual RGB lookup tables (RGB 0-255)
+SE_ATMOSPHERE_MODEL_HUE_RGB: dict = {
+    "Thick": {
+        0.0: (114, 153, 175), 0.1: (181, 100, 209), 0.2: (245, 106, 193),
+        0.3: (255, 94, 149),  0.4: (255, 99, 80),   0.5: (230, 154, 53),
+        -0.5: (229, 152, 48), -0.4: (200, 177, 38), -0.3: (127, 189, 32),
+        -0.2: (98, 193, 89),  -0.1: (90, 186, 146),
+    },
+    "Biogenic": {
+        0.0: (114, 153, 175), 0.1: (181, 100, 209), 0.2: (245, 106, 193),
+        0.3: (255, 94, 149),  0.4: (255, 99, 80),   0.5: (230, 154, 53),
+        -0.5: (229, 152, 48), -0.4: (200, 177, 38), -0.3: (127, 189, 32),
+        -0.2: (98, 193, 89),  -0.1: (90, 186, 146),
+    },
+    "Chlorine": {
+        0.0: (179, 151, 30),  0.1: (129, 161, 33),  0.2: (104, 176, 76),
+        0.3: (103, 175, 127), 0.4: (127, 152, 159), 0.5: (186, 132, 199),
+        -0.5: (188, 131, 200), -0.4: (242, 129, 194), -0.3: (248, 114, 150),
+        -0.2: (250, 108, 89), -0.1: (223, 144, 59),
+    },
+    "Earth": {
+        0.0: (106, 158, 200), 0.1: (211, 117, 236), 0.2: (255, 84, 200),
+        0.3: (255, 89, 157),  0.4: (255, 100, 64),  0.5: (237, 168, 55),
+        -0.5: (226, 155, 31), -0.4: (189, 177, 19), -0.3: (94, 190, 15),
+        -0.2: (69, 196, 96),  -0.1: (68, 185, 151),
+    },
+    "Ethereal": {
+        0.0: (99, 148, 211),  0.1: (207, 87, 228),  0.2: (255, 66, 191),
+        0.3: (255, 75, 144),  0.4: (255, 102, 52),  0.5: (227, 161, 28),
+        -0.5: (206, 136, 10), -0.4: (182, 178, 10), -0.3: (84, 196, 14),
+        -0.2: (65, 204, 110), -0.1: (54, 181, 154),
+    },
+    "Jupiter": {
+        0.0: (178, 151, 135), 0.1: (196, 144, 141), 0.2: (213, 146, 141),
+        0.3: (215, 139, 121), 0.4: (220, 155, 117), 0.5: (205, 157, 101),
+        -0.5: (200, 148, 89), -0.4: (198, 166, 103), -0.3: (168, 162, 89),
+        -0.2: (176, 168, 114), -0.1: (168, 159, 124),
+    },
+    "Mars": {
+        0.0: (186, 115, 45),  0.1: (197, 167, 75),  0.2: (111, 123, 23),
+        0.3: (103, 143, 61),  0.4: (120, 153, 113), 0.5: (151, 150, 142),
+        -0.5: (151, 150, 142), -0.4: (198, 146, 169), -0.3: (232, 154, 172),
+        -0.2: (239, 143, 149), -0.1: (247, 162, 127),
+    },
+    "Neptune": {
+        0.0: (137, 177, 236), 0.1: (231, 100, 244), 0.2: (255, 89, 215),
+        0.3: (255, 108, 167), 0.4: (255, 127, 69),  0.5: (230, 171, 35),
+        -0.5: (229, 170, 32), -0.4: (182, 184, 13), -0.3: (84, 214, 27),
+        -0.2: (58, 201, 114), -0.1: (46, 181, 163),
+    },
+    "Pluto": {
+        0.0: (179, 161, 181), 0.1: (203, 127, 163), 0.2: (237, 127, 161),
+        0.3: (255, 154, 154), 0.4: (248, 169, 120), 0.5: (219, 173, 85),
+        -0.5: (232, 193, 107), -0.4: (191, 178, 73), -0.3: (137, 174, 66),
+        -0.2: (166, 204, 144), -0.1: (162, 190, 163),
+    },
+    "Sun": {
+        0.0: (178, 151, 135), 0.1: (196, 144, 141), 0.2: (213, 146, 141),
+        0.3: (215, 139, 121), 0.4: (220, 155, 117), 0.5: (205, 157, 101),
+        -0.5: (200, 148, 89), -0.4: (198, 166, 103), -0.3: (168, 162, 89),
+        -0.2: (176, 168, 114), -0.1: (168, 159, 124),
+    },
+    "Thin": {
+        0.0: (114, 153, 175), 0.1: (181, 100, 209), 0.2: (245, 106, 193),
+        0.3: (255, 94, 149),  0.4: (255, 99, 80),   0.5: (230, 154, 53),
+        -0.5: (229, 152, 48), -0.4: (200, 177, 38), -0.3: (127, 189, 32),
+        -0.2: (98, 193, 89),  -0.1: (90, 186, 146),
+    },
+    "Venus": {
+        0.0: (223, 168, 77),  0.1: (181, 165, 46),  0.2: (128, 178, 49),
+        0.3: (100, 168, 84),  0.4: (104, 165, 129), 0.5: (159, 156, 176),
+        -0.5: (159, 156, 176), -0.4: (215, 145, 190), -0.3: (234, 110, 165),
+        -0.2: (236, 95, 116), -0.1: (238, 116, 74),
+    },
+}
+
+SE_TITAN_LAND_HUE_RGB: dict = {
+    0.0: (250, 195, 136), 0.1: (242, 221, 120), 0.2: (216, 224, 119),
+    0.3: (175, 231, 131), 0.4: (171, 228, 182), 0.5: (166, 207, 198),
+    -0.5: (165, 209, 199), -0.4: (186, 162, 225), -0.3: (250, 157, 225),
+    -0.2: (255, 160, 217), -0.1: (255, 160, 168),
+}
+
+SE_TITAN_SKY_HUE_RGB: dict = {
+    0.0: (130, 99, 147),  0.1: (203, 117, 147), 0.2: (224, 99, 130),
+    0.3: (226, 109, 97),  0.4: (218, 139, 80),  0.5: (203, 163, 88),
+    -0.5: (200, 163, 81), -0.4: (174, 164, 72), -0.3: (155, 176, 93),
+    -0.2: (132, 169, 114), -0.1: (164, 159, 137),
+}
+
+# (lo, hi) visual opacity range per SE atmosphere model
+SE_ATMOSPHERE_VISUAL_OPACITY: dict = {
+    "None":     (0.00, 0.00),
+    "Ethereal": (0.05, 0.15),
+    "Pluto":    (0.12, 0.30),
+    "Mars":     (0.18, 0.38),
+    "Thin":     (0.25, 0.55),
+    "Earth":    (0.35, 0.65),
+    "Sun":      (0.40, 0.70),
+    "Thick":    (0.60, 0.85),
+    "Biogenic": (0.60, 0.85),
+    "Chlorine": (0.75, 0.92),
+    "Titan":    (0.55, 0.82),
+    "Venus":    (0.55, 0.82),
+    "Jupiter":  (0.65, 0.96),
+    "Neptune":  (0.65, 0.96),
+}
+
+VEGETATION_COLORS: dict = {
+    "green": "RGBA(0.100, 0.300, 0.080, 1.000)",
+    "blue": "RGBA(0.050, 0.180, 0.450, 1.000)",
+    "black": "RGBA(0.015, 0.020, 0.015, 1.000)",
+    "yellow": "RGBA(0.550, 0.470, 0.090, 1.000)",
+    "red": "RGBA(0.420, 0.080, 0.050, 1.000)",
+}
+
+ICE_SNOW_COLORS: dict = {
+    "default": "RGBA(0.920, 0.960, 0.980, 1.000)",
+    "white": "RGBA(0.970, 0.980, 1.000, 1.000)",
+    "europa": "RGBA(0.850, 0.850, 0.780, 1.000)",
+    "ganymede": "RGBA(0.700, 0.680, 0.600, 1.000)",
+    "pluto": "RGBA(0.780, 0.700, 0.620, 1.000)",
+    "triton": "RGBA(0.820, 0.860, 0.900, 1.000)",
+    "titan": "RGBA(0.720, 0.560, 0.330, 1.000)",
+}
+
+SURFACE_STYLE_COLORS: dict = {
+    "mars": ["RGBA(0.620, 0.260, 0.120, 1.000)", "RGBA(0.420, 0.180, 0.090, 1.000)", "RGBA(0.760, 0.480, 0.280, 1.000)"],
+    "mars2": ["RGBA(0.700, 0.320, 0.160, 1.000)", "RGBA(0.480, 0.210, 0.110, 1.000)", "RGBA(0.850, 0.560, 0.340, 1.000)"],
+    "earth": ["RGBA(0.240, 0.350, 0.180, 1.000)", "RGBA(0.420, 0.360, 0.230, 1.000)", "RGBA(0.720, 0.700, 0.580, 1.000)"],
+    "rocky": ["RGBA(0.430, 0.390, 0.340, 1.000)", "RGBA(0.300, 0.280, 0.250, 1.000)", "RGBA(0.600, 0.560, 0.500, 1.000)"],
+    "rusty": ["RGBA(0.520, 0.180, 0.090, 1.000)", "RGBA(0.280, 0.110, 0.070, 1.000)", "RGBA(0.720, 0.380, 0.180, 1.000)"],
+    "sandy": ["RGBA(0.720, 0.610, 0.420, 1.000)", "RGBA(0.500, 0.420, 0.270, 1.000)", "RGBA(0.840, 0.760, 0.560, 1.000)"],
+    "mercury": ["RGBA(0.450, 0.430, 0.400, 1.000)", "RGBA(0.260, 0.250, 0.240, 1.000)", "RGBA(0.650, 0.630, 0.590, 1.000)"],
+    "moon": ["RGBA(0.500, 0.500, 0.500, 1.000)", "RGBA(0.250, 0.250, 0.250, 1.000)", "RGBA(0.760, 0.760, 0.760, 1.000)"],
+    "graphite": ["RGBA(0.050, 0.050, 0.055, 1.000)", "RGBA(0.015, 0.015, 0.018, 1.000)", "RGBA(0.160, 0.160, 0.170, 1.000)"],
+    "oil": ["RGBA(0.020, 0.015, 0.010, 1.000)", "RGBA(0.000, 0.000, 0.000, 1.000)", "RGBA(0.110, 0.080, 0.040, 1.000)"],
+    "white": ["RGBA(0.900, 0.910, 0.880, 1.000)", "RGBA(0.650, 0.680, 0.670, 1.000)", "RGBA(0.980, 0.990, 1.000, 1.000)"],
+    "titan": ["RGBA(0.620, 0.420, 0.180, 1.000)", "RGBA(0.300, 0.190, 0.080, 1.000)", "RGBA(0.860, 0.620, 0.260, 1.000)"],
+    "pluto": ["RGBA(0.700, 0.600, 0.520, 1.000)", "RGBA(0.350, 0.260, 0.220, 1.000)", "RGBA(0.900, 0.860, 0.800, 1.000)"],
+    "io": ["RGBA(0.850, 0.720, 0.250, 1.000)", "RGBA(0.600, 0.250, 0.050, 1.000)", "RGBA(0.970, 0.920, 0.450, 1.000)"],
+}
 
 _PLANET_PALETTES: dict = {
     "barren": [
@@ -224,6 +571,197 @@ _ARCHETYPE_DEFAULT_TEMPS: dict = {
 
 def _palette_from_preset(preset: str):
     return _PLANET_PALETTES.get(preset, (None, False))
+
+
+def clean_se_preset_name(preset: str) -> str:
+    """Normalize a Space Engine Surface.Preset string for structured parsing."""
+    value = str(preset or "").strip().strip('"').strip("'")
+    value = value.replace("\\", "/").split("/")[-1].strip()
+    value = re.sub(r"\s+", "_", value)
+    if value.lower().endswith(".cfg"):
+        value = value[:-4]
+    return value.lower()
+
+
+_SE_PRESET_FAMILIES = {
+    "terra", "aquaria", "ferria", "carbonia", "asteroid", "browndwarf",
+}
+_SE_PRESET_STATES = {"airless", "arid", "wet"}
+_SE_PRESET_STYLE_TOKENS = {
+    "earth", "earth2mars", "mars", "mars2", "moon", "mercury", "vesta",
+    "ceres", "europa", "ganymede", "callisto", "rhea", "dione",
+    "enceladus", "tethys", "pluto", "triton", "sedna", "eris", "titan",
+    "titan2", "io", "io1", "io2", "venus", "rocky", "rusty", "sandy",
+    "yellow", "grey", "graphite", "oil", "black", "dark", "white",
+    "brown", "red", "blue", "green", "default", "lb",
+}
+_SE_PRESET_ICY_STYLES = {
+    "europa", "ganymede", "callisto", "rhea", "dione", "enceladus",
+    "tethys", "pluto", "triton", "sedna", "eris", "titan", "titan2",
+    "white",
+}
+
+
+def parse_se_surface_preset(preset: str) -> dict:
+    key = clean_se_preset_name(preset)
+    parts = [p for p in key.replace("-", "_").split("_") if p]
+    raw = str(preset or "")
+    info = {
+        "raw": raw,
+        "key": key,
+        "family": None,
+        "state": None,
+        "style": None,
+        "substyle": [],
+        "plant_color": None,
+        "water_color_hint": None,
+        "ice_color_hint": "default",
+        "surface_palette_key": None,
+        "surface_palette": None,
+        "surface_palette_hint": None,
+        "explicit_plants": False,
+        "terrain_family": None,
+        "appearance_flags": {
+            "airless": False,
+            "arid": False,
+            "wet": False,
+            "allow_water": False,
+            "expect_clouds": False,
+            "use_ice": False,
+            "use_snow": False,
+            "use_vegetation": False,
+            "earth_city_texture_ok": False,
+        },
+    }
+    if not key:
+        return info
+
+    family = parts[0] if parts else None
+    idx = 1
+    if key.startswith("custom_temp_"):
+        family = "custom-temp"
+        idx = 2
+    elif key == "custom_earth":
+        family, idx = "custom_earth", 2
+    elif key == "custom_mars":
+        family, idx = "custom_mars", 2
+    elif key == "custom_moon":
+        family, idx = "custom_moon", 2
+    elif family == "browndwarf" and len(parts) > 1:
+        idx = 1
+    info["family"] = family
+
+    state = None
+    if idx < len(parts) and parts[idx] in _SE_PRESET_STATES:
+        state = parts[idx]
+        idx += 1
+    elif family == "custom-temp":
+        state = "custom-temp"
+    info["state"] = state
+    flags = info["appearance_flags"]
+    flags["airless"] = state == "airless"
+    flags["arid"] = state == "arid"
+    flags["wet"] = state == "wet"
+
+    rest = parts[idx:]
+    style = None
+    for token in rest:
+        if token in _SE_PRESET_STYLE_TOKENS:
+            style = token
+            break
+    if family == "custom_earth":
+        style = "earth"
+    elif family == "custom_mars":
+        style = "mars"
+    elif family == "custom_moon":
+        style = "moon"
+    elif family == "asteroid" and not style:
+        style = "asteroid"
+    elif not style and family in ("terra", "aquaria", "ferria", "carbonia"):
+        style = "default"
+    info["style"] = style
+    info["substyle"] = [t for t in rest if t != style]
+
+    rest_joined = "_".join(rest)
+    if "blue_seas" in rest_joined:
+        info["water_color_hint"] = "blue_seas"
+    elif "yellow_seas" in rest_joined:
+        info["water_color_hint"] = "yellow_seas"
+    elif "titan" in rest:
+        info["water_color_hint"] = "titan"
+    elif "oil" in rest:
+        info["water_color_hint"] = "oil"
+    elif family == "carbonia" and any(t in rest for t in ("black", "dark", "graphite")):
+        info["water_color_hint"] = "carbon_black"
+    elif any(t in rest for t in ("europa", "enceladus", "white")):
+        info["water_color_hint"] = "icy_blue"
+    elif state == "wet":
+        info["water_color_hint"] = "default"
+
+    plant_color = None
+    for i, token in enumerate(rest):
+        if token == "plants" and i > 0:
+            prev = rest[i - 1]
+            if prev in ("green", "blue", "black", "yellow", "red"):
+                plant_color = prev
+            elif i > 1 and prev == "yellow" and rest[i - 2] in ("black", "yellow"):
+                plant_color = rest[i - 2]
+            break
+        if token.endswith("plants"):
+            prefix = token[:-6].strip("_")
+            if prefix in ("green", "blue", "black", "yellow", "red"):
+                plant_color = prefix
+                break
+    if plant_color:
+        info["plant_color"] = plant_color
+        info["explicit_plants"] = True
+
+    palette_hints = [t for t in rest if t in ("green", "blue", "black", "yellow", "red", "grey", "gray", "rust", "sandy", "rocky", "mars", "mars2", "earth", "white", "brown")]
+    if palette_hints:
+        info["surface_palette_hint"] = palette_hints[-1]
+
+    for ice_key in ("europa", "ganymede", "pluto", "triton", "titan", "white"):
+        if ice_key in rest or style == ice_key:
+            info["ice_color_hint"] = ice_key
+            break
+
+    if style in ("mars", "mars2", "earth2mars"):
+        info["terrain_family"] = "volcanic_mars"
+    elif style in ("moon", "mercury", "vesta", "ceres", "asteroid"):
+        info["terrain_family"] = "cratered_old"
+    elif style in ("europa", "enceladus", "dione", "tethys"):
+        info["terrain_family"] = "icy_fractured"
+    elif style in ("ganymede", "callisto", "rhea", "pluto", "triton", "sedna", "eris", "titan", "titan2", "white"):
+        info["terrain_family"] = "icy_fractured"
+    elif style in ("io", "io1", "io2"):
+        info["terrain_family"] = "volcanic"
+    elif style == "venus":
+        info["terrain_family"] = "tectonic_chaotic"
+    elif state == "wet" and family in ("terra", "aquaria"):
+        info["terrain_family"] = "hybrid"
+    elif state == "airless":
+        info["terrain_family"] = "cratered_old"
+
+    palette_style = style
+    if palette_style == "earth2mars":
+        palette_style = "earth"
+    if palette_style in SURFACE_STYLE_COLORS:
+        info["surface_palette_key"] = palette_style
+        info["surface_palette"] = SURFACE_STYLE_COLORS[palette_style]
+    elif family == "carbonia":
+        info["surface_palette_key"] = "graphite" if style in ("graphite", "black", "dark") else "oil" if style == "oil" else "rusty"
+        info["surface_palette"] = SURFACE_STYLE_COLORS[info["surface_palette_key"]]
+    elif family == "ferria":
+        info["surface_palette_key"] = "mercury" if style == "mercury" else "rusty" if style == "rust" else "rocky"
+        info["surface_palette"] = SURFACE_STYLE_COLORS[info["surface_palette_key"]]
+
+    flags["allow_water"] = bool(state == "wet" or family == "aquaria" or info["water_color_hint"] in ("blue_seas", "yellow_seas", "titan", "icy_blue", "oil"))
+    flags["expect_clouds"] = bool(state in ("wet", "arid") and family not in ("asteroid", "browndwarf") and not flags["airless"])
+    flags["use_ice"] = bool(style in _SE_PRESET_ICY_STYLES or family == "aquaria" and state == "airless")
+    flags["use_snow"] = flags["use_ice"]
+    flags["use_vegetation"] = bool(info["explicit_plants"])
+    flags["earth_city_texture_ok"] = bool(family == "custom_earth" or style == "earth" and key.startswith("custom"))
+    return info
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -706,13 +1244,13 @@ _NAMED_BODY_TEXTURES: dict = {
         "HeightMapSource":     "Textures/Planets/earth_height",
         "NormalMapSource":     "Textures/Planets/earth_height_normals",
         "HeightMapSource2":    "", "NormalMapSource2": "",
-        "EmissiveMapSource":   "Textures/EarthNight_2500x1250Grids",
+        "EmissiveMapSource":   "Textures/planet_cities",
         "VegetationMapSource": "Textures/Planets/earth_vegetation",
         "UseHeightMap0":    True,  "HeightMapMix0":    1.0, "HeightMapOffset0": 0.0,
         "HeightMapFlipH0":  False, "HeightMapFlipV0":  False,
         "UseHeightMap1":    False, "HeightMapMix1":    1.0, "HeightMapOffset1": 0.0,
         "HeightMapFlipH1":  False, "HeightMapFlipV1":  False,
-        "HazeType": 2, "CityLightSource": 0,
+        "HazeType": 2, "CityLightSource": 1,
         "AtmosphereColor":          "RGBA(0.212, 0.325, 0.510, 1.000)",
         "originalAtmosphereColor":  "RGBA(0.212, 0.325, 0.510, 1.000)",
         "customAtmosphereColor":    "RGBA(0.212, 0.325, 0.510, 1.000)",

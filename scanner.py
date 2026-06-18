@@ -10,7 +10,8 @@ import random
 import math
 
 from constants import (
-    log_debug, safe_float,
+    log_debug, safe_float, se_bool,
+    parse_life_block,
     VALID_SE_TYPES, EARTH_MASS_KG, EARTH_RADIUS_M, SOLAR_RADIUS_M,
     AU_TO_METERS, GRAVITATIONAL_CONSTANT,
     SOLAR_MASS_KG,
@@ -90,62 +91,88 @@ def extract_se_extras(obj_data: dict) -> tuple:
     """
     atm_info = {}
     atm_block = obj_data.get("Atmosphere")
+    has_atmosphere_block = isinstance(atm_block, dict)
+    has_no_atmosphere = se_bool(obj_data.get("NoAtmosphere", "false"))
     if isinstance(atm_block, dict):
         comp = atm_block.get("Composition", {})
         if not isinstance(comp, dict):
             comp = {}
-        atm_info = {
-            "pressure":   safe_float(atm_block.get("Pressure",   0)),
-            "density":    safe_float(atm_block.get("Density",    0)),
-            "height":     safe_float(atm_block.get("Height",     0)),
-            "comp":       comp,
-            "hue":        atm_block.get("Hue"),
-            "saturation": atm_block.get("Saturation"),
-            "model":      atm_block.get("Model", ""),
-            "opacity":    safe_float(atm_block.get("Opacity", 1.0)),
-        }
+        if not has_no_atmosphere:
+            atm_info = {
+                "pressure":   safe_float(atm_block.get("Pressure",   0)),
+                "density":    safe_float(atm_block.get("Density",    0)),
+                "height":     safe_float(atm_block.get("Height",     0)),
+                "comp":       comp,
+                "hue":        atm_block.get("Hue"),
+                "saturation": atm_block.get("Saturation"),
+                "model":      atm_block.get("Model", ""),
+                "opacity":    safe_float(atm_block.get("Opacity", 1.0)),
+            }
 
-    no_ocean_flag = str(obj_data.get("NoOcean", "false")).strip().lower() in ("true", "1")
-    has_ocean     = isinstance(obj_data.get("Ocean"), dict)
+    no_ocean_flag = se_bool(obj_data.get("NoOcean", "false"))
+    has_ocean_block = isinstance(obj_data.get("Ocean"), dict)
+    has_ocean     = has_ocean_block and not no_ocean_flag
     sea_level     = 0.0
     preset_name   = ""
+    ocean_block   = obj_data.get("Ocean") if isinstance(obj_data.get("Ocean"), dict) else {}
+    ocean_comp    = ocean_block.get("Composition", {}) if isinstance(ocean_block, dict) else {}
+    if not isinstance(ocean_comp, dict):
+        ocean_comp = {}
+    ocean_depth   = safe_float(ocean_block.get("Depth", 0.0)) if isinstance(ocean_block, dict) else 0.0
     surf = obj_data.get("Surface", {})
     if isinstance(surf, dict):
         sea_level   = safe_float(surf.get("seaLevel", 0))
         preset_name = surf.get("Preset", "")
         if isinstance(preset_name, str):
             preset_name = preset_name.strip('"')
-        if not has_ocean and not no_ocean_flag and sea_level > 0.05:
-            has_ocean = True
 
-    use_water = has_ocean or sea_level > 0.05
+    class_name = str(obj_data.get("Class", "")).strip().strip('"').lower()
+    class_implies_ocean = class_name in ("aquaria", "ocean", "marine", "panthalassic")
+    if class_implies_ocean and not no_ocean_flag:
+        has_ocean = True
+    use_water = has_ocean
+    flags = {
+        "has_no_ocean": no_ocean_flag,
+        "has_ocean_block": has_ocean_block,
+        "has_no_atmosphere": has_no_atmosphere,
+        "has_atmosphere_block": has_atmosphere_block,
+        "has_no_clouds": se_bool(obj_data.get("NoClouds", "false")),
+        "has_clouds_block": isinstance(obj_data.get("Clouds"), (dict, list)),
+        "has_no_lava": se_bool(obj_data.get("NoLava", "false")),
+        "raw_atmosphere_composition": dict(atm_block.get("Composition", {})) if isinstance(atm_block, dict) and isinstance(atm_block.get("Composition", {}), dict) else {},
+        "raw_ocean_composition": dict(ocean_comp),
+        "raw_ocean_depth": ocean_depth,
+        "raw_surface_sea_level": sea_level,
+    }
+    obj_data["_source_flags"] = flags
     mag_field, mag_pole = _get_magnetic_params(obj_data.get("Aurora"))
 
     life_block       = obj_data.get("Life")
-    has_life         = isinstance(life_block, dict)
-    has_exotic_life  = False
-    has_organic_life = False
-    has_aerial_life  = False
+    life_info        = parse_life_block(life_block)
+    obj_data["_life_info"] = life_info
+    has_life         = life_info["has_life"]
+    has_exotic_life  = life_info["is_exotic"]
+    has_organic_life = life_info["is_organic"]
+    has_aerial_life  = life_info["has_aerial"]
     diffmap = obj_data.get("Surface", {}).get("Preset", "") if isinstance(obj_data.get("Surface"), dict) else ""
-
-    if has_life:
-        class_val        = str(life_block.get("Class", "")).strip().lower()
-        biome_val        = str(life_block.get("Biome",  "")).strip().lower()
-        has_exotic_life  = class_val == "exotic"
-        has_aerial_life  = "aerial" in biome_val
-        has_organic_life = not has_exotic_life
 
     return (atm_info, has_ocean, use_water, mag_field, mag_pole, sea_level,
             preset_name, has_life, has_exotic_life, has_aerial_life, has_organic_life, diffmap)
 
 
 def _get_magnetic_params(aurora_block) -> tuple:
-    from constants import _builtin_db
     if not isinstance(aurora_block, dict):
         return 0.0, 0.0
+    try:
+        from constants import _builtin_db
+        db = _builtin_db()
+    except Exception:
+        db = {"aurora_to_magnetic": [
+            {"north_bright_max": 0.00, "north_radius_max": 0, "field": 0.0, "pole_angle": 0.0},
+            {"north_bright_max": 9999, "north_radius_max": 99999, "field": 6220.0, "pole_angle": -10.0},
+        ]}
     nb = safe_float(aurora_block.get("NorthBright", 0))
     nr = safe_float(aurora_block.get("NorthRadius", 0))
-    db = _builtin_db()
     for row in db.get("aurora_to_magnetic", []):
         if nb <= row["north_bright_max"] and nr <= row["north_radius_max"]:
             return row["field"], row["pole_angle"]
